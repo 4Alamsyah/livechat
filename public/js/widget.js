@@ -1,0 +1,711 @@
+/**
+ * Live Support Widget (PoC)
+ * Embed with: <script src="https://your-domain/js/widget.js" data-property-id="XYZ"></script>
+ *
+ * Vanilla JS, no build step. Loads Pusher-js (talks to Laravel Reverb, which is
+ * wire-compatible with the Pusher protocol) and PeerJS from CDN at runtime.
+ */
+(function () {
+    'use strict';
+
+    if (window.__liveSupportWidgetLoaded) {
+        return;
+    }
+    window.__liveSupportWidgetLoaded = true;
+
+    var CDN = {
+        pusher: 'https://cdn.jsdelivr.net/npm/pusher-js@8.4.0/dist/web/pusher.min.js',
+        peerjs: 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js',
+    };
+
+    var currentScript =
+        document.currentScript ||
+        (function () {
+            var scripts = document.getElementsByTagName('script');
+            return scripts[scripts.length - 1];
+        })();
+
+    var BASE_URL = new URL(currentScript.src).origin;
+    var PROPERTY_ID = currentScript.getAttribute('data-property-id') || 'default';
+
+    var STORAGE_VISITOR_KEY = 'lc_visitor_id_' + PROPERTY_ID;
+    var STORAGE_CONVERSATION_KEY = 'lc_conversation_' + PROPERTY_ID;
+    var STORAGE_NAME_KEY = 'lc_visitor_name_' + PROPERTY_ID;
+
+    // ---------------------------------------------------------------------
+    // Small helpers
+    // ---------------------------------------------------------------------
+
+    function uuid() {
+        if (window.crypto && window.crypto.randomUUID) {
+            return window.crypto.randomUUID();
+        }
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+            var r = (Math.random() * 16) | 0;
+            var v = c === 'x' ? r : (r & 0x3) | 0x8;
+            return v.toString(16);
+        });
+    }
+
+    function getVisitorId() {
+        var id = localStorage.getItem(STORAGE_VISITOR_KEY);
+        if (!id) {
+            id = uuid();
+            localStorage.setItem(STORAGE_VISITOR_KEY, id);
+        }
+        return id;
+    }
+
+    var scriptCache = {};
+    function loadScript(url) {
+        if (scriptCache[url]) {
+            return scriptCache[url];
+        }
+        scriptCache[url] = new Promise(function (resolve, reject) {
+            var el = document.createElement('script');
+            el.src = url;
+            el.async = true;
+            el.onload = resolve;
+            el.onerror = function () {
+                reject(new Error('Failed to load ' + url));
+            };
+            document.head.appendChild(el);
+        });
+        return scriptCache[url];
+    }
+
+    function api(path, options) {
+        options = options || {};
+        var headers = { Accept: 'application/json' };
+        if (options.body) {
+            headers['Content-Type'] = 'application/json';
+        }
+        return fetch(BASE_URL + path, {
+            method: options.method || 'GET',
+            headers: headers,
+            body: options.body ? JSON.stringify(options.body) : undefined,
+        }).then(function (res) {
+            if (!res.ok) {
+                return res.json().catch(function () {
+                    return {};
+                }).then(function (data) {
+                    throw new Error(data.message || 'Request failed (' + res.status + ')');
+                });
+            }
+            if (res.status === 204) {
+                return null;
+            }
+            return res.json();
+        });
+    }
+
+    function escapeHtml(str) {
+        var div = document.createElement('div');
+        div.textContent = str == null ? '' : String(str);
+        return div.innerHTML;
+    }
+
+    function formatTime(iso) {
+        try {
+            var d = new Date(iso);
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch (e) {
+            return '';
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Styles
+    // ---------------------------------------------------------------------
+
+    var STYLE = '\
+        .lc-launcher{position:fixed;bottom:20px;right:20px;width:60px;height:60px;border-radius:50%;\
+            background:#2563eb;color:#fff;border:none;box-shadow:0 6px 18px rgba(0,0,0,.25);cursor:pointer;\
+            z-index:2147483000;display:flex;align-items:center;justify-content:center;font-size:26px;}\
+        .lc-launcher:hover{background:#1d4ed8;}\
+        .lc-panel{position:fixed;bottom:92px;right:20px;width:340px;max-width:calc(100vw - 24px);\
+            height:520px;max-height:calc(100vh - 120px);background:#fff;border-radius:14px;\
+            box-shadow:0 12px 40px rgba(0,0,0,.28);z-index:2147483000;display:none;flex-direction:column;\
+            overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;\
+            font-size:14px;color:#111827;}\
+        .lc-panel.lc-open{display:flex;}\
+        .lc-header{background:#2563eb;color:#fff;padding:14px 16px;display:flex;align-items:center;\
+            justify-content:space-between;}\
+        .lc-header h3{margin:0;font-size:15px;font-weight:600;}\
+        .lc-header .lc-sub{font-size:11px;opacity:.85;}\
+        .lc-close{background:transparent;border:none;color:#fff;font-size:20px;cursor:pointer;line-height:1;}\
+        .lc-body{flex:1;display:flex;flex-direction:column;min-height:0;}\
+        .lc-prechat{padding:16px;display:flex;flex-direction:column;gap:10px;}\
+        .lc-prechat input{padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;}\
+        .lc-prechat button{padding:10px;border:none;border-radius:8px;background:#2563eb;color:#fff;\
+            font-weight:600;cursor:pointer;}\
+        .lc-messages{flex:1;overflow-y:auto;padding:12px;background:#f9fafb;}\
+        .lc-msg{margin-bottom:10px;display:flex;flex-direction:column;max-width:82%;}\
+        .lc-msg.visitor{margin-left:auto;align-items:flex-end;}\
+        .lc-msg.agent,.lc-msg.system{margin-right:auto;align-items:flex-start;}\
+        .lc-bubble{padding:8px 12px;border-radius:14px;white-space:pre-wrap;word-break:break-word;}\
+        .lc-msg.visitor .lc-bubble{background:#2563eb;color:#fff;border-bottom-right-radius:4px;}\
+        .lc-msg.agent .lc-bubble{background:#e5e7eb;color:#111827;border-bottom-left-radius:4px;}\
+        .lc-msg.system .lc-bubble{background:transparent;color:#6b7280;font-size:12px;font-style:italic;padding:0;}\
+        .lc-meta{font-size:10px;color:#9ca3af;margin-top:2px;}\
+        .lc-callbar{display:flex;gap:6px;padding:8px 10px;border-top:1px solid #e5e7eb;background:#fff;}\
+        .lc-callbar button{flex:1;padding:8px 4px;border:1px solid #d1d5db;background:#fff;border-radius:8px;\
+            cursor:pointer;font-size:11px;display:flex;flex-direction:column;align-items:center;gap:2px;}\
+        .lc-callbar button:hover{background:#f3f4f6;}\
+        .lc-callbar button span.lc-ico{font-size:16px;}\
+        .lc-inputbar{display:flex;gap:8px;padding:10px;border-top:1px solid #e5e7eb;background:#fff;}\
+        .lc-inputbar input{flex:1;padding:9px 12px;border:1px solid #d1d5db;border-radius:20px;font-size:14px;}\
+        .lc-inputbar button{width:38px;height:38px;border-radius:50%;border:none;background:#2563eb;color:#fff;\
+            cursor:pointer;font-size:16px;}\
+        .lc-call-panel{position:absolute;inset:0;background:#111827;display:none;flex-direction:column;z-index:5;}\
+        .lc-call-panel.lc-active{display:flex;}\
+        .lc-call-videos{flex:1;position:relative;background:#000;}\
+        .lc-remote-video{width:100%;height:100%;object-fit:contain;background:#000;}\
+        .lc-local-video{position:absolute;bottom:10px;right:10px;width:90px;height:68px;object-fit:cover;\
+            border-radius:8px;border:2px solid #fff;background:#000;}\
+        .lc-call-status{color:#fff;text-align:center;padding:8px;font-size:12px;opacity:.85;}\
+        .lc-call-controls{display:flex;justify-content:center;gap:10px;padding:12px;background:#1f2937;}\
+        .lc-call-controls button{width:44px;height:44px;border-radius:50%;border:none;cursor:pointer;\
+            font-size:16px;background:#374151;color:#fff;}\
+        .lc-call-controls button.lc-hangup{background:#dc2626;}\
+        .lc-call-controls button.lc-off{background:#b91c1c;}\
+        .lc-incoming{position:absolute;left:10px;right:10px;top:10px;background:#111827;color:#fff;\
+            border-radius:10px;padding:10px 12px;z-index:6;box-shadow:0 8px 24px rgba(0,0,0,.3);display:none;}\
+        .lc-incoming.lc-show{display:block;}\
+        .lc-incoming .lc-row{display:flex;gap:8px;margin-top:8px;}\
+        .lc-incoming button{flex:1;padding:7px;border-radius:6px;border:none;cursor:pointer;font-size:12px;}\
+        .lc-incoming .lc-accept{background:#16a34a;color:#fff;}\
+        .lc-incoming .lc-reject{background:#dc2626;color:#fff;}\
+        .lc-badge{position:absolute;top:-4px;right:-4px;background:#dc2626;color:#fff;border-radius:50%;\
+            width:18px;height:18px;font-size:11px;display:flex;align-items:center;justify-content:center;}\
+    ';
+
+    function injectStyles() {
+        if (document.getElementById('lc-widget-styles')) {
+            return;
+        }
+        var style = document.createElement('style');
+        style.id = 'lc-widget-styles';
+        style.textContent = STYLE;
+        document.head.appendChild(style);
+    }
+
+    // ---------------------------------------------------------------------
+    // Widget class
+    // ---------------------------------------------------------------------
+
+    function Widget() {
+        this.visitorId = getVisitorId();
+        this.visitorName = localStorage.getItem(STORAGE_NAME_KEY) || '';
+        this.conversationUuid = sessionStorage.getItem(STORAGE_CONVERSATION_KEY) || null;
+        this.config = null;
+        this.pusher = null;
+        this.channel = null;
+        this.peer = null;
+        this.activeCall = null;
+        this.localStream = null;
+        this.callMode = null; // 'video' | 'audio' | 'screen'
+        this.unreadCount = 0;
+
+        this.buildDom();
+        this.bindEvents();
+
+        if (this.conversationUuid) {
+            this.enterChatView();
+        }
+    }
+
+    Widget.prototype.buildDom = function () {
+        injectStyles();
+
+        var launcher = document.createElement('button');
+        launcher.className = 'lc-launcher';
+        launcher.setAttribute('aria-label', 'Open live chat');
+        launcher.innerHTML = '💬<span class="lc-badge" style="display:none"></span>';
+        document.body.appendChild(launcher);
+        this.launcherEl = launcher;
+        this.badgeEl = launcher.querySelector('.lc-badge');
+
+        var panel = document.createElement('div');
+        panel.className = 'lc-panel';
+        panel.innerHTML =
+            '<div class="lc-header">' +
+                '<div><h3>Live Support</h3><div class="lc-sub">We usually reply in a few minutes</div></div>' +
+                '<button class="lc-close" aria-label="Close">&times;</button>' +
+            '</div>' +
+            '<div class="lc-body" style="position:relative;">' +
+                '<div class="lc-prechat">' +
+                    '<input type="text" class="lc-name-input" placeholder="Your name (optional)" />' +
+                    '<button class="lc-start-btn">Start Chat</button>' +
+                '</div>' +
+                '<div class="lc-chatview" style="display:none;flex:1;flex-direction:column;min-height:0;">' +
+                    '<div class="lc-messages"></div>' +
+                    '<div class="lc-callbar">' +
+                        '<button class="lc-call-btn" data-mode="video"><span class="lc-ico">📹</span>Video</button>' +
+                        '<button class="lc-call-btn" data-mode="audio"><span class="lc-ico">📞</span>Audio</button>' +
+                        '<button class="lc-call-btn" data-mode="screen"><span class="lc-ico">🖥️</span>Share Screen</button>' +
+                    '</div>' +
+                    '<div class="lc-inputbar">' +
+                        '<input type="text" class="lc-msg-input" placeholder="Type a message..." />' +
+                        '<button class="lc-send-btn">➤</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="lc-call-panel">' +
+                    '<div class="lc-call-videos">' +
+                        '<video class="lc-remote-video" autoplay playsinline></video>' +
+                        '<video class="lc-local-video" autoplay playsinline muted></video>' +
+                    '</div>' +
+                    '<div class="lc-call-status">Calling...</div>' +
+                    '<div class="lc-call-controls">' +
+                        '<button class="lc-mute-btn" title="Mute">🎤</button>' +
+                        '<button class="lc-video-btn" title="Camera">📷</button>' +
+                        '<button class="lc-hangup-btn lc-hangup" title="Hang up">✖</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="lc-incoming">' +
+                    '<div class="lc-incoming-text"></div>' +
+                    '<div class="lc-row">' +
+                        '<button class="lc-accept">Accept</button>' +
+                        '<button class="lc-reject">Decline</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+        document.body.appendChild(panel);
+        this.panelEl = panel;
+
+        this.nameInputEl = panel.querySelector('.lc-name-input');
+        this.startBtnEl = panel.querySelector('.lc-start-btn');
+        this.prechatEl = panel.querySelector('.lc-prechat');
+        this.chatViewEl = panel.querySelector('.lc-chatview');
+        this.messagesEl = panel.querySelector('.lc-messages');
+        this.msgInputEl = panel.querySelector('.lc-msg-input');
+        this.sendBtnEl = panel.querySelector('.lc-send-btn');
+        this.callPanelEl = panel.querySelector('.lc-call-panel');
+        this.remoteVideoEl = panel.querySelector('.lc-remote-video');
+        this.localVideoEl = panel.querySelector('.lc-local-video');
+        this.callStatusEl = panel.querySelector('.lc-call-status');
+        this.muteBtnEl = panel.querySelector('.lc-mute-btn');
+        this.videoBtnEl = panel.querySelector('.lc-video-btn');
+        this.hangupBtnEl = panel.querySelector('.lc-hangup-btn');
+        this.incomingEl = panel.querySelector('.lc-incoming');
+        this.incomingTextEl = panel.querySelector('.lc-incoming-text');
+        this.acceptBtnEl = panel.querySelector('.lc-accept');
+        this.rejectBtnEl = panel.querySelector('.lc-reject');
+
+        if (this.visitorName) {
+            this.nameInputEl.value = this.visitorName;
+        }
+    };
+
+    Widget.prototype.bindEvents = function () {
+        var self = this;
+
+        this.launcherEl.addEventListener('click', function () {
+            self.togglePanel();
+        });
+        this.panelEl.querySelector('.lc-close').addEventListener('click', function () {
+            self.setPanelOpen(false);
+        });
+
+        this.startBtnEl.addEventListener('click', function () {
+            self.startConversation();
+        });
+        this.nameInputEl.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                self.startConversation();
+            }
+        });
+
+        this.sendBtnEl.addEventListener('click', function () {
+            self.sendMessage();
+        });
+        this.msgInputEl.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                self.sendMessage();
+            }
+        });
+
+        Array.prototype.forEach.call(this.panelEl.querySelectorAll('.lc-call-btn'), function (btn) {
+            btn.addEventListener('click', function () {
+                self.startCall(btn.getAttribute('data-mode'));
+            });
+        });
+
+        this.hangupBtnEl.addEventListener('click', function () {
+            self.endCall(true);
+        });
+        this.muteBtnEl.addEventListener('click', function () {
+            self.toggleTrack('audio', self.muteBtnEl);
+        });
+        this.videoBtnEl.addEventListener('click', function () {
+            self.toggleTrack('video', self.videoBtnEl);
+        });
+
+        this.acceptBtnEl.addEventListener('click', function () {
+            self.acceptIncomingCall();
+        });
+        this.rejectBtnEl.addEventListener('click', function () {
+            self.rejectIncomingCall();
+        });
+    };
+
+    Widget.prototype.togglePanel = function () {
+        this.setPanelOpen(!this.panelEl.classList.contains('lc-open'));
+    };
+
+    Widget.prototype.setPanelOpen = function (open) {
+        this.panelEl.classList.toggle('lc-open', open);
+        if (open) {
+            this.unreadCount = 0;
+            this.updateBadge();
+            this.scrollToBottom();
+        }
+    };
+
+    Widget.prototype.updateBadge = function () {
+        if (this.unreadCount > 0) {
+            this.badgeEl.style.display = 'flex';
+            this.badgeEl.textContent = this.unreadCount > 9 ? '9+' : String(this.unreadCount);
+        } else {
+            this.badgeEl.style.display = 'none';
+        }
+    };
+
+    Widget.prototype.startConversation = function () {
+        var self = this;
+        var name = this.nameInputEl.value.trim();
+        this.visitorName = name;
+        localStorage.setItem(STORAGE_NAME_KEY, name);
+
+        this.startBtnEl.disabled = true;
+        this.startBtnEl.textContent = 'Connecting...';
+
+        api('/api/widget/conversations', {
+            method: 'POST',
+            body: {
+                property_id: PROPERTY_ID,
+                visitor_id: this.visitorId,
+                visitor_name: name || null,
+            },
+        })
+            .then(function (data) {
+                self.conversationUuid = data.uuid;
+                sessionStorage.setItem(STORAGE_CONVERSATION_KEY, data.uuid);
+                self.enterChatView();
+            })
+            .catch(function (err) {
+                self.startBtnEl.disabled = false;
+                self.startBtnEl.textContent = 'Start Chat';
+                alert('Could not start chat: ' + err.message);
+            });
+    };
+
+    Widget.prototype.enterChatView = function () {
+        this.prechatEl.style.display = 'none';
+        this.chatViewEl.style.display = 'flex';
+        this.loadHistory();
+        this.connectRealtime();
+    };
+
+    Widget.prototype.loadHistory = function () {
+        var self = this;
+        api('/api/widget/conversations/' + this.conversationUuid + '/messages')
+            .then(function (messages) {
+                messages.forEach(function (m) {
+                    self.renderMessage(m);
+                });
+                self.scrollToBottom();
+            })
+            .catch(function () {});
+    };
+
+    Widget.prototype.connectRealtime = function () {
+        var self = this;
+        api('/api/widget/config')
+            .then(function (config) {
+                self.config = config;
+                return loadScript(CDN.pusher);
+            })
+            .then(function () {
+                self.pusher = new window.Pusher(self.config.reverb.key, {
+                    cluster: '',
+                    wsHost: self.config.reverb.host,
+                    wsPort: self.config.reverb.port,
+                    wssPort: self.config.reverb.port,
+                    forceTLS: self.config.reverb.scheme === 'https',
+                    enabledTransports: ['ws', 'wss'],
+                    disableStats: true,
+                });
+                self.channel = self.pusher.subscribe('conversation.' + self.conversationUuid);
+                self.channel.bind('message.sent', function (payload) {
+                    if (payload.sender_type !== 'visitor') {
+                        self.renderMessage(payload);
+                        self.scrollToBottom();
+                        if (!self.panelEl.classList.contains('lc-open')) {
+                            self.unreadCount++;
+                            self.updateBadge();
+                        }
+                    }
+                });
+                self.channel.bind('call.signal', function (payload) {
+                    self.handleCallSignal(payload);
+                });
+            })
+            .catch(function (err) {
+                console.error('[live-support] realtime connection failed', err);
+            });
+    };
+
+    Widget.prototype.renderMessage = function (m) {
+        var row = document.createElement('div');
+        row.className = 'lc-msg ' + m.sender_type;
+        row.innerHTML =
+            '<div class="lc-bubble">' + escapeHtml(m.body) + '</div>' +
+            '<div class="lc-meta">' + (m.sender_type === 'agent' ? escapeHtml(m.sender_name || 'Agent') + ' · ' : '') + formatTime(m.created_at) + '</div>';
+        this.messagesEl.appendChild(row);
+    };
+
+    Widget.prototype.renderSystemMessage = function (text) {
+        var row = document.createElement('div');
+        row.className = 'lc-msg system';
+        row.innerHTML = '<div class="lc-bubble">' + escapeHtml(text) + '</div>';
+        this.messagesEl.appendChild(row);
+        this.scrollToBottom();
+    };
+
+    Widget.prototype.scrollToBottom = function () {
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    };
+
+    Widget.prototype.sendMessage = function () {
+        var self = this;
+        var body = this.msgInputEl.value.trim();
+        if (!body || !this.conversationUuid) {
+            return;
+        }
+        this.msgInputEl.value = '';
+        this.renderMessage({ sender_type: 'visitor', body: body, created_at: new Date().toISOString() });
+        this.scrollToBottom();
+
+        api('/api/widget/conversations/' + this.conversationUuid + '/messages', {
+            method: 'POST',
+            body: { body: body, visitor_name: this.visitorName || null },
+        }).catch(function (err) {
+            self.renderSystemMessage('Failed to send: ' + err.message);
+        });
+    };
+
+    // -- Calling ------------------------------------------------------------
+
+    Widget.prototype.ensurePeer = function () {
+        var self = this;
+        if (this.peer && !this.peer.destroyed) {
+            return Promise.resolve(this.peer);
+        }
+        return loadScript(CDN.peerjs).then(function () {
+            return new Promise(function (resolve, reject) {
+                var peer = new window.Peer(undefined, { debug: 1 });
+                peer.on('open', function () {
+                    self.peer = peer;
+                    self.peer.on('call', function (call) {
+                        call.answer(self.localStream || undefined);
+                        self.bindCallEvents(call);
+                    });
+                    resolve(peer);
+                });
+                peer.on('error', function (err) {
+                    console.error('[live-support] peer error', err);
+                    reject(err);
+                });
+            });
+        });
+    };
+
+    Widget.prototype.getLocalStream = function (mode) {
+        if (mode === 'screen') {
+            return navigator.mediaDevices.getDisplayMedia({ video: true });
+        }
+        return navigator.mediaDevices.getUserMedia({
+            video: mode === 'video',
+            audio: true,
+        });
+    };
+
+    Widget.prototype.startCall = function (mode) {
+        var self = this;
+        if (!this.conversationUuid) {
+            return;
+        }
+        this.callMode = mode;
+        this.showCallPanel('Calling agent...');
+
+        this.getLocalStream(mode)
+            .then(function (stream) {
+                self.localStream = stream;
+                if (stream && mode !== 'screen') {
+                    self.localVideoEl.srcObject = stream;
+                    self.localVideoEl.style.display = 'block';
+                } else {
+                    self.localVideoEl.style.display = 'none';
+                }
+                if (mode === 'screen') {
+                    self.remoteVideoEl.srcObject = stream;
+                    stream.getVideoTracks()[0].onended = function () {
+                        self.endCall(true);
+                    };
+                }
+                return self.ensurePeer();
+            })
+            .then(function (peer) {
+                return api('/api/widget/conversations/' + self.conversationUuid + '/call', {
+                    method: 'POST',
+                    body: { type: 'invite', mode: mode, peer_id: peer.id, visitor_name: self.visitorName || null },
+                });
+            })
+            .catch(function (err) {
+                self.renderSystemMessage('Call failed: ' + err.message);
+                self.endCall(false);
+            });
+    };
+
+    Widget.prototype.handleCallSignal = function (payload) {
+        if (payload.from !== 'agent') {
+            return;
+        }
+        if (payload.type === 'invite') {
+            this.pendingInvite = payload;
+            this.incomingTextEl.textContent = (payload.agent_name || 'Agent') + ' is calling you (' + payload.mode + ')';
+            this.incomingEl.classList.add('lc-show');
+            this.setPanelOpen(true);
+        } else if (payload.type === 'accept') {
+            this.remotePeerId = payload.peer_id;
+            this.callStatusEl.textContent = 'Connected';
+            if (this.callMode === 'screen' && this.peer) {
+                var call = this.peer.call(payload.peer_id, this.localStream || undefined);
+                this.bindCallEvents(call);
+            }
+        } else if (payload.type === 'reject') {
+            this.renderSystemMessage('Call declined.');
+            this.endCall(false);
+        } else if (payload.type === 'end') {
+            this.renderSystemMessage('Call ended.');
+            this.endCall(false);
+        }
+    };
+
+    Widget.prototype.acceptIncomingCall = function () {
+        var self = this;
+        var invite = this.pendingInvite;
+        if (!invite) {
+            return;
+        }
+        this.incomingEl.classList.remove('lc-show');
+        this.callMode = invite.mode;
+        this.showCallPanel('Connecting...');
+
+        var streamPromise = invite.mode === 'screen' ? Promise.resolve(null) : this.getLocalStream(invite.mode);
+
+        streamPromise
+            .then(function (stream) {
+                self.localStream = stream;
+                if (stream) {
+                    self.localVideoEl.srcObject = stream;
+                    self.localVideoEl.style.display = 'block';
+                }
+                return self.ensurePeer();
+            })
+            .then(function (peer) {
+                var call = peer.call(invite.peer_id, self.localStream || undefined);
+                self.bindCallEvents(call);
+                return api('/api/widget/conversations/' + self.conversationUuid + '/call', {
+                    method: 'POST',
+                    body: { type: 'accept', peer_id: peer.id },
+                });
+            })
+            .catch(function (err) {
+                self.renderSystemMessage('Could not join call: ' + err.message);
+                self.endCall(true);
+            });
+    };
+
+    Widget.prototype.rejectIncomingCall = function () {
+        this.incomingEl.classList.remove('lc-show');
+        if (this.conversationUuid) {
+            api('/api/widget/conversations/' + this.conversationUuid + '/call', {
+                method: 'POST',
+                body: { type: 'reject' },
+            }).catch(function () {});
+        }
+        this.pendingInvite = null;
+    };
+
+    Widget.prototype.bindCallEvents = function (call) {
+        var self = this;
+        this.activeCall = call;
+        call.on('stream', function (remoteStream) {
+            self.remoteVideoEl.srcObject = remoteStream;
+            self.callStatusEl.textContent = 'Connected';
+        });
+        call.on('close', function () {
+            self.endCall(false);
+        });
+        call.on('error', function (err) {
+            console.error('[live-support] call error', err);
+        });
+    };
+
+    Widget.prototype.showCallPanel = function (statusText) {
+        this.callPanelEl.classList.add('lc-active');
+        this.callStatusEl.textContent = statusText;
+    };
+
+    Widget.prototype.toggleTrack = function (kind, btnEl) {
+        if (!this.localStream) {
+            return;
+        }
+        var tracks = kind === 'audio' ? this.localStream.getAudioTracks() : this.localStream.getVideoTracks();
+        tracks.forEach(function (t) {
+            t.enabled = !t.enabled;
+            btnEl.classList.toggle('lc-off', !t.enabled);
+        });
+    };
+
+    Widget.prototype.endCall = function (notifyRemote) {
+        if (notifyRemote && this.conversationUuid) {
+            api('/api/widget/conversations/' + this.conversationUuid + '/call', {
+                method: 'POST',
+                body: { type: 'end' },
+            }).catch(function () {});
+        }
+        if (this.activeCall) {
+            try {
+                this.activeCall.close();
+            } catch (e) {}
+            this.activeCall = null;
+        }
+        if (this.localStream) {
+            this.localStream.getTracks().forEach(function (t) {
+                t.stop();
+            });
+            this.localStream = null;
+        }
+        this.remoteVideoEl.srcObject = null;
+        this.localVideoEl.srcObject = null;
+        this.callPanelEl.classList.remove('lc-active');
+        this.incomingEl.classList.remove('lc-show');
+        this.pendingInvite = null;
+        this.callMode = null;
+    };
+
+    // ---------------------------------------------------------------------
+
+    function boot() {
+        new Widget();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot);
+    } else {
+        boot();
+    }
+})();
