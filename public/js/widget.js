@@ -183,6 +183,10 @@
         .lc-attach-btn{background:#e5e7eb !important;color:#374151 !important;}\
         .lc-image{display:block;max-width:180px;max-height:180px;border-radius:12px;margin-bottom:2px;\
             object-fit:cover;}\
+        .lc-restart-bar{padding:12px;border-top:1px solid #e5e7eb;background:#fff;}\
+        .lc-restart-btn{width:100%;padding:10px;border:none;border-radius:8px;background:#2563eb;color:#fff;\
+            font-weight:600;cursor:pointer;font-size:14px;}\
+        .lc-restart-btn:hover{background:#1d4ed8;}\
         .lc-call-panel{position:absolute;inset:0;background:#111827;display:none;flex-direction:column;z-index:5;}\
         .lc-call-panel.lc-active{display:flex;}\
         .lc-call-videos{flex:1;position:relative;background:#000;}\
@@ -296,6 +300,9 @@
                         '<input type="text" class="lc-msg-input" placeholder="Type a message..." />' +
                         '<button class="lc-send-btn">➤</button>' +
                     '</div>' +
+                    '<div class="lc-restart-bar" style="display:none;">' +
+                        '<button class="lc-restart-btn">Start New Chat</button>' +
+                    '</div>' +
                 '</div>' +
                 '<div class="lc-call-panel">' +
                     '<div class="lc-call-videos">' +
@@ -330,7 +337,10 @@
         this.attachBtnEl = panel.querySelector('.lc-attach-btn');
         this.imageInputEl = panel.querySelector('.lc-image-input');
         this.endBtnEl = panel.querySelector('.lc-end-btn');
+        this.restartBarEl = panel.querySelector('.lc-restart-bar');
+        this.restartBtnEl = panel.querySelector('.lc-restart-btn');
         this.callBarEl = panel.querySelector('.lc-callbar');
+        this.inputBarEl = panel.querySelector('.lc-inputbar');
         this.callPanelEl = panel.querySelector('.lc-call-panel');
         this.remoteVideoEl = panel.querySelector('.lc-remote-video');
         this.localVideoEl = panel.querySelector('.lc-local-video');
@@ -394,6 +404,9 @@
 
         this.endBtnEl.addEventListener('click', function () {
             self.endSession();
+        });
+        this.restartBtnEl.addEventListener('click', function () {
+            self.startNewSession();
         });
 
         Array.prototype.forEach.call(this.panelEl.querySelectorAll('.lc-call-btn'), function (btn) {
@@ -664,14 +677,47 @@
 
     Widget.prototype.disableChat = function () {
         this.msgInputEl.disabled = true;
-        this.msgInputEl.placeholder = 'This chat has ended';
         this.attachBtnEl.disabled = true;
         this.sendBtnEl.disabled = true;
         this.endBtnEl.style.display = 'none';
+        this.callBarEl.style.display = 'none';
+        this.inputBarEl.style.display = 'none';
+        this.restartBarEl.style.display = 'block';
         Array.prototype.forEach.call(this.panelEl.querySelectorAll('.lc-call-btn'), function (btn) {
             btn.disabled = true;
         });
         this.endCall(false);
+    };
+
+    Widget.prototype.startNewSession = function () {
+        if (this.pusher) {
+            this.pusher.disconnect();
+            this.pusher = null;
+        }
+        this.channel = null;
+        sessionStorage.removeItem(STORAGE_CONVERSATION_KEY);
+        this.conversationUuid = null;
+        this.sessionEnded = false;
+        this.unreadCount = 0;
+        this.updateBadge();
+
+        this.messagesEl.innerHTML = '';
+        this.msgInputEl.disabled = false;
+        this.msgInputEl.value = '';
+        this.attachBtnEl.disabled = false;
+        this.sendBtnEl.disabled = false;
+        Array.prototype.forEach.call(this.panelEl.querySelectorAll('.lc-call-btn'), function (btn) {
+            btn.disabled = false;
+        });
+        this.callBarEl.style.display = 'flex';
+        this.inputBarEl.style.display = 'flex';
+        this.restartBarEl.style.display = 'none';
+
+        this.startBtnEl.disabled = false;
+        this.startBtnEl.textContent = 'Start Chat';
+
+        this.chatViewEl.style.display = 'none';
+        this.prechatEl.style.display = 'flex';
     };
 
     // -- Calling ------------------------------------------------------------
@@ -702,7 +748,16 @@
 
     Widget.prototype.getLocalStream = function (mode) {
         if (mode === 'screen') {
-            return navigator.mediaDevices.getDisplayMedia({ video: true });
+            return navigator.mediaDevices.getDisplayMedia({ video: true }).then(function (screenStream) {
+                return navigator.mediaDevices
+                    .getUserMedia({ audio: true })
+                    .then(function (micStream) {
+                        return new MediaStream(screenStream.getVideoTracks().concat(micStream.getAudioTracks()));
+                    })
+                    .catch(function () {
+                        return screenStream;
+                    });
+            });
         }
         return navigator.mediaDevices.getUserMedia({
             video: mode === 'video',
@@ -728,10 +783,13 @@
                     self.localVideoEl.style.display = 'none';
                 }
                 if (mode === 'screen') {
+                    self.remoteVideoEl.muted = true;
                     self.remoteVideoEl.srcObject = stream;
                     stream.getVideoTracks()[0].onended = function () {
                         self.endCall(true);
                     };
+                } else {
+                    self.remoteVideoEl.muted = false;
                 }
                 return self.ensurePeer();
             })
@@ -869,6 +927,7 @@
             this.localStream = null;
         }
         this.remoteVideoEl.srcObject = null;
+        this.remoteVideoEl.muted = false;
         this.localVideoEl.srcObject = null;
         this.callPanelEl.classList.remove('lc-active');
         this.incomingEl.classList.remove('lc-show');

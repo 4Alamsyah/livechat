@@ -327,7 +327,7 @@ function ensurePeer(): Promise<any> {
 
 function getLocalStream(mode: 'video' | 'audio' | 'screen'): Promise<MediaStream | null> {
     if (mode === 'screen') {
-        return Promise.resolve(null);
+        return navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => null);
     }
     return navigator.mediaDevices.getUserMedia({ video: mode === 'video', audio: true });
 }
@@ -610,7 +610,6 @@ onBeforeUnmount(() => {
                         <div class="p-1 text-center text-xs text-white/80">{{ callStatus }}</div>
                         <div class="flex justify-center gap-3 bg-gray-900 p-3">
                             <button
-                                v-if="callMode !== 'screen'"
                                 class="flex h-11 w-11 items-center justify-center rounded-full text-white"
                                 :class="micEnabled ? 'bg-gray-700' : 'bg-red-700'"
                                 @click="toggleMic"
