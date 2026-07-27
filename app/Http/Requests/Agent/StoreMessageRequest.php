@@ -4,6 +4,7 @@ namespace App\Http\Requests\Agent;
 
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StoreMessageRequest extends FormRequest
 {
@@ -23,7 +24,8 @@ class StoreMessageRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'body' => ['required', 'string', 'max:4000'],
+            'body' => ['nullable', 'string', 'max:4000', Rule::requiredIf(fn () => ! $this->hasFile('image'))],
+            'image' => ['nullable', 'image', 'max:5120'],
         ];
     }
 }

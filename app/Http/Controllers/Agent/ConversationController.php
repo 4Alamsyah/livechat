@@ -19,7 +19,7 @@ class ConversationController extends Controller
         $this->chat->assignAgent($conversation, auth()->user());
 
         return response()->json(
-            $conversation->messages()->oldest()->get(['id', 'sender_type', 'sender_name', 'body', 'created_at'])
+            $conversation->messages()->oldest()->get(['id', 'sender_type', 'sender_name', 'type', 'body', 'attachment_path', 'created_at'])
         );
     }
 
@@ -29,7 +29,7 @@ class ConversationController extends Controller
 
         $this->chat->assignAgent($conversation, $agent);
 
-        $message = $this->chat->sendMessage($conversation, 'agent', $request->validated('body'), $agent->name);
+        $message = $this->chat->sendMessage($conversation, 'agent', $request->validated('body'), $agent->name, $request->file('image'));
 
         return response()->json($message, 201);
     }
@@ -49,7 +49,7 @@ class ConversationController extends Controller
 
     public function close(Conversation $conversation): Response
     {
-        $conversation->update(['status' => 'closed']);
+        $this->chat->closeConversation($conversation, 'agent');
 
         return response()->noContent();
     }

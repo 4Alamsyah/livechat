@@ -40,7 +40,9 @@ class MessageSent implements ShouldBroadcastNow
             'conversation_uuid' => $this->message->conversation->uuid,
             'sender_type' => $this->message->sender_type,
             'sender_name' => $this->message->sender_name,
+            'type' => $this->message->type,
             'body' => $this->message->body,
+            'attachment_url' => $this->message->attachment_url,
             'created_at' => $this->message->created_at?->toIso8601String(),
         ];
     }

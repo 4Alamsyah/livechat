@@ -17,7 +17,7 @@ class MessageController extends Controller
     public function index(Conversation $conversation): JsonResponse
     {
         return response()->json(
-            $conversation->messages()->oldest()->get(['id', 'sender_type', 'sender_name', 'body', 'created_at'])
+            $conversation->messages()->oldest()->get(['id', 'sender_type', 'sender_name', 'type', 'body', 'attachment_path', 'created_at'])
         );
     }
 
@@ -25,7 +25,7 @@ class MessageController extends Controller
     {
         $senderName = $request->validated('visitor_name') ?? $conversation->visitor_name;
 
-        $message = $this->chat->sendMessage($conversation, 'visitor', $request->validated('body'), $senderName);
+        $message = $this->chat->sendMessage($conversation, 'visitor', $request->validated('body'), $senderName, $request->file('image'));
 
         return response()->json($message, 201);
     }

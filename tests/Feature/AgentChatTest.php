@@ -1,8 +1,12 @@
 <?php
 
+use App\Events\ConversationClosed;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\User;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Storage;
 
 test('guests cannot access the agent dashboard', function () {
     $this->get('/agent/dashboard')->assertRedirect('/login');
@@ -46,6 +50,8 @@ test('an agent can view a conversation and reply, claiming it', function () {
 });
 
 test('an agent can close a conversation', function () {
+    Event::fake([ConversationClosed::class]);
+
     $agent = User::factory()->create();
     $conversation = Conversation::factory()->create();
 
@@ -57,4 +63,25 @@ test('an agent can close a conversation', function () {
         'id' => $conversation->id,
         'status' => 'closed',
     ]);
+
+    Event::assertDispatched(ConversationClosed::class, fn (ConversationClosed $event) => $event->closedBy === 'agent');
+});
+
+test('an agent can send an image message', function () {
+    Storage::fake('public');
+
+    $agent = User::factory()->create();
+    $conversation = Conversation::factory()->create();
+
+    $this->actingAs($agent)
+        ->postJson(route('agent.conversations.messages.store', $conversation->uuid), [
+            'image' => UploadedFile::fake()->image('photo.jpg'),
+        ])
+        ->assertCreated()
+        ->assertJsonFragment(['type' => 'image']);
+
+    $message = $conversation->messages()->first();
+
+    expect($message->type)->toBe('image');
+    Storage::disk('public')->assertExists($message->attachment_path);
 });

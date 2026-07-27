@@ -99,6 +99,23 @@
         });
     }
 
+    function apiUpload(path, formData) {
+        return fetch(BASE_URL + path, {
+            method: 'POST',
+            headers: { Accept: 'application/json' },
+            body: formData,
+        }).then(function (res) {
+            if (!res.ok) {
+                return res.json().catch(function () {
+                    return {};
+                }).then(function (data) {
+                    throw new Error(data.message || 'Request failed (' + res.status + ')');
+                });
+            }
+            return res.json();
+        });
+    }
+
     function escapeHtml(str) {
         var div = document.createElement('div');
         div.textContent = str == null ? '' : String(str);
@@ -133,6 +150,10 @@
             justify-content:space-between;}\
         .lc-header h3{margin:0;font-size:15px;font-weight:600;}\
         .lc-header .lc-sub{font-size:11px;opacity:.85;}\
+        .lc-header-actions{display:flex;align-items:center;gap:10px;}\
+        .lc-end-btn{background:rgba(255,255,255,.18);border:none;color:#fff;font-size:11px;font-weight:600;\
+            padding:5px 9px;border-radius:6px;cursor:pointer;}\
+        .lc-end-btn:hover{background:rgba(255,255,255,.28);}\
         .lc-close{background:transparent;border:none;color:#fff;font-size:20px;cursor:pointer;line-height:1;}\
         .lc-body{flex:1;display:flex;flex-direction:column;min-height:0;}\
         .lc-prechat{padding:16px;display:flex;flex-direction:column;gap:10px;}\
@@ -152,11 +173,16 @@
         .lc-callbar button{flex:1;padding:8px 4px;border:1px solid #d1d5db;background:#fff;border-radius:8px;\
             cursor:pointer;font-size:11px;display:flex;flex-direction:column;align-items:center;gap:2px;}\
         .lc-callbar button:hover{background:#f3f4f6;}\
+        .lc-callbar button:disabled{opacity:.5;cursor:not-allowed;}\
         .lc-callbar button span.lc-ico{font-size:16px;}\
         .lc-inputbar{display:flex;gap:8px;padding:10px;border-top:1px solid #e5e7eb;background:#fff;}\
-        .lc-inputbar input{flex:1;padding:9px 12px;border:1px solid #d1d5db;border-radius:20px;font-size:14px;}\
+        .lc-inputbar input[type=text]{flex:1;padding:9px 12px;border:1px solid #d1d5db;border-radius:20px;font-size:14px;}\
         .lc-inputbar button{width:38px;height:38px;border-radius:50%;border:none;background:#2563eb;color:#fff;\
-            cursor:pointer;font-size:16px;}\
+            cursor:pointer;font-size:16px;flex-shrink:0;}\
+        .lc-inputbar button:disabled{opacity:.5;cursor:not-allowed;}\
+        .lc-attach-btn{background:#e5e7eb !important;color:#374151 !important;}\
+        .lc-image{display:block;max-width:180px;max-height:180px;border-radius:12px;margin-bottom:2px;\
+            object-fit:cover;}\
         .lc-call-panel{position:absolute;inset:0;background:#111827;display:none;flex-direction:column;z-index:5;}\
         .lc-call-panel.lc-active{display:flex;}\
         .lc-call-videos{flex:1;position:relative;background:#000;}\
@@ -178,6 +204,14 @@
         .lc-incoming .lc-reject{background:#dc2626;color:#fff;}\
         .lc-badge{position:absolute;top:-4px;right:-4px;background:#dc2626;color:#fff;border-radius:50%;\
             width:18px;height:18px;font-size:11px;display:flex;align-items:center;justify-content:center;}\
+        .lc-toast{position:fixed;bottom:92px;right:20px;width:280px;max-width:calc(100vw - 24px);\
+            background:#fff;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:12px 14px;\
+            z-index:2147483000;display:none;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,\
+            "Segoe UI",Roboto,Helvetica,Arial,sans-serif;}\
+        .lc-toast.lc-show{display:block;}\
+        .lc-toast-title{font-size:12px;font-weight:700;color:#2563eb;margin-bottom:3px;}\
+        .lc-toast-body{font-size:13px;color:#111827;overflow:hidden;text-overflow:ellipsis;\
+            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}\
     ';
 
     function injectStyles() {
@@ -226,12 +260,23 @@
         this.launcherEl = launcher;
         this.badgeEl = launcher.querySelector('.lc-badge');
 
+        var toast = document.createElement('div');
+        toast.className = 'lc-toast';
+        toast.innerHTML = '<div class="lc-toast-title">New message</div><div class="lc-toast-body"></div>';
+        document.body.appendChild(toast);
+        this.toastEl = toast;
+        this.toastBodyEl = toast.querySelector('.lc-toast-body');
+        this.toastTimer = null;
+
         var panel = document.createElement('div');
         panel.className = 'lc-panel';
         panel.innerHTML =
             '<div class="lc-header">' +
                 '<div><h3>Live Support</h3><div class="lc-sub">We usually reply in a few minutes</div></div>' +
-                '<button class="lc-close" aria-label="Close">&times;</button>' +
+                '<div class="lc-header-actions">' +
+                    '<button class="lc-end-btn" style="display:none;" title="End chat">End chat</button>' +
+                    '<button class="lc-close" aria-label="Close">&times;</button>' +
+                '</div>' +
             '</div>' +
             '<div class="lc-body" style="position:relative;">' +
                 '<div class="lc-prechat">' +
@@ -246,6 +291,8 @@
                         '<button class="lc-call-btn" data-mode="screen"><span class="lc-ico">🖥️</span>Share Screen</button>' +
                     '</div>' +
                     '<div class="lc-inputbar">' +
+                        '<button class="lc-attach-btn" type="button" title="Send image">📎</button>' +
+                        '<input type="file" class="lc-image-input" accept="image/*" style="display:none;" />' +
                         '<input type="text" class="lc-msg-input" placeholder="Type a message..." />' +
                         '<button class="lc-send-btn">➤</button>' +
                     '</div>' +
@@ -280,6 +327,10 @@
         this.messagesEl = panel.querySelector('.lc-messages');
         this.msgInputEl = panel.querySelector('.lc-msg-input');
         this.sendBtnEl = panel.querySelector('.lc-send-btn');
+        this.attachBtnEl = panel.querySelector('.lc-attach-btn');
+        this.imageInputEl = panel.querySelector('.lc-image-input');
+        this.endBtnEl = panel.querySelector('.lc-end-btn');
+        this.callBarEl = panel.querySelector('.lc-callbar');
         this.callPanelEl = panel.querySelector('.lc-call-panel');
         this.remoteVideoEl = panel.querySelector('.lc-remote-video');
         this.localVideoEl = panel.querySelector('.lc-local-video');
@@ -299,6 +350,11 @@
 
     Widget.prototype.bindEvents = function () {
         var self = this;
+
+        this.toastEl.addEventListener('click', function () {
+            self.hideToast();
+            self.setPanelOpen(true);
+        });
 
         this.launcherEl.addEventListener('click', function () {
             self.togglePanel();
@@ -323,6 +379,21 @@
             if (e.key === 'Enter') {
                 self.sendMessage();
             }
+        });
+
+        this.attachBtnEl.addEventListener('click', function () {
+            self.imageInputEl.click();
+        });
+        this.imageInputEl.addEventListener('change', function () {
+            var file = self.imageInputEl.files[0];
+            self.imageInputEl.value = '';
+            if (file) {
+                self.sendImage(file);
+            }
+        });
+
+        this.endBtnEl.addEventListener('click', function () {
+            self.endSession();
         });
 
         Array.prototype.forEach.call(this.panelEl.querySelectorAll('.lc-call-btn'), function (btn) {
@@ -359,6 +430,42 @@
             this.unreadCount = 0;
             this.updateBadge();
             this.scrollToBottom();
+            this.hideToast();
+        }
+    };
+
+    Widget.prototype.showToast = function (m) {
+        this.toastBodyEl.textContent = m.body;
+        this.toastEl.classList.add('lc-show');
+        clearTimeout(this.toastTimer);
+        this.toastTimer = setTimeout(this.hideToast.bind(this), 6000);
+    };
+
+    Widget.prototype.hideToast = function () {
+        this.toastEl.classList.remove('lc-show');
+        clearTimeout(this.toastTimer);
+    };
+
+    Widget.prototype.requestNotificationPermission = function () {
+        if (window.Notification && Notification.permission === 'default') {
+            Notification.requestPermission();
+        }
+    };
+
+    Widget.prototype.notifyNewAgentMessage = function (m) {
+        if (!this.panelEl.classList.contains('lc-open')) {
+            this.showToast(m);
+        }
+        if (document.hidden && window.Notification && Notification.permission === 'granted') {
+            try {
+                var notification = new Notification('New message from ' + (m.sender_name || 'Support'), { body: m.body });
+                notification.onclick = function () {
+                    window.focus();
+                    notification.close();
+                };
+            } catch (e) {
+                // Notification constructor can throw on unsupported platforms; ignore.
+            }
         }
     };
 
@@ -403,8 +510,10 @@
     Widget.prototype.enterChatView = function () {
         this.prechatEl.style.display = 'none';
         this.chatViewEl.style.display = 'flex';
+        this.endBtnEl.style.display = 'inline-block';
         this.loadHistory();
         this.connectRealtime();
+        this.requestNotificationPermission();
     };
 
     Widget.prototype.loadHistory = function () {
@@ -445,10 +554,16 @@
                             self.unreadCount++;
                             self.updateBadge();
                         }
+                        self.notifyNewAgentMessage(payload);
                     }
                 });
                 self.channel.bind('call.signal', function (payload) {
                     self.handleCallSignal(payload);
+                });
+                self.channel.bind('conversation.closed', function (payload) {
+                    if (payload.closed_by !== 'visitor') {
+                        self.handleConversationClosed(payload);
+                    }
                 });
             })
             .catch(function (err) {
@@ -459,8 +574,15 @@
     Widget.prototype.renderMessage = function (m) {
         var row = document.createElement('div');
         row.className = 'lc-msg ' + m.sender_type;
+        var content =
+            m.type === 'image' && m.attachment_url
+                ? '<a href="' + escapeHtml(m.attachment_url) + '" target="_blank" rel="noopener"><img class="lc-image" src="' + escapeHtml(m.attachment_url) + '" /></a>'
+                : '';
+        if (m.body) {
+            content += '<div class="lc-bubble">' + escapeHtml(m.body) + '</div>';
+        }
         row.innerHTML =
-            '<div class="lc-bubble">' + escapeHtml(m.body) + '</div>' +
+            content +
             '<div class="lc-meta">' + (m.sender_type === 'agent' ? escapeHtml(m.sender_name || 'Agent') + ' · ' : '') + formatTime(m.created_at) + '</div>';
         this.messagesEl.appendChild(row);
     };
@@ -493,6 +615,63 @@
         }).catch(function (err) {
             self.renderSystemMessage('Failed to send: ' + err.message);
         });
+    };
+
+    Widget.prototype.sendImage = function (file) {
+        var self = this;
+        if (!this.conversationUuid) {
+            return;
+        }
+        var formData = new FormData();
+        formData.append('image', file);
+        if (this.visitorName) {
+            formData.append('visitor_name', this.visitorName);
+        }
+
+        apiUpload('/api/widget/conversations/' + this.conversationUuid + '/messages', formData)
+            .then(function (message) {
+                self.renderMessage(message);
+                self.scrollToBottom();
+            })
+            .catch(function (err) {
+                self.renderSystemMessage('Failed to send image: ' + err.message);
+            });
+    };
+
+    Widget.prototype.endSession = function () {
+        var self = this;
+        if (!this.conversationUuid) {
+            return;
+        }
+        api('/api/widget/conversations/' + this.conversationUuid + '/close', { method: 'POST' })
+            .then(function () {
+                self.handleConversationClosed({ closed_by: 'visitor' });
+            })
+            .catch(function (err) {
+                self.renderSystemMessage('Could not end chat: ' + err.message);
+            });
+    };
+
+    Widget.prototype.handleConversationClosed = function (payload) {
+        if (this.sessionEnded) {
+            return;
+        }
+        this.sessionEnded = true;
+        this.renderSystemMessage(payload.closed_by === 'agent' ? 'The agent ended this chat.' : 'Chat ended.');
+        this.scrollToBottom();
+        this.disableChat();
+    };
+
+    Widget.prototype.disableChat = function () {
+        this.msgInputEl.disabled = true;
+        this.msgInputEl.placeholder = 'This chat has ended';
+        this.attachBtnEl.disabled = true;
+        this.sendBtnEl.disabled = true;
+        this.endBtnEl.style.display = 'none';
+        Array.prototype.forEach.call(this.panelEl.querySelectorAll('.lc-call-btn'), function (btn) {
+            btn.disabled = true;
+        });
+        this.endCall(false);
     };
 
     // -- Calling ------------------------------------------------------------

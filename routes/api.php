@@ -11,4 +11,5 @@ Route::prefix('widget')->group(function () {
     Route::get('conversations/{conversation:uuid}/messages', [MessageController::class, 'index']);
     Route::post('conversations/{conversation:uuid}/messages', [MessageController::class, 'store']);
     Route::post('conversations/{conversation:uuid}/call', [MessageController::class, 'signal']);
+    Route::post('conversations/{conversation:uuid}/close', [ConversationController::class, 'close']);
 });

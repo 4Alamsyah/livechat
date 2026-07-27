@@ -3,11 +3,13 @@
 namespace App\Services;
 
 use App\Events\CallSignalSent;
+use App\Events\ConversationClosed;
 use App\Events\ConversationStarted;
 use App\Events\MessageSent;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\User;
+use Illuminate\Http\UploadedFile;
 
 class ChatService
 {
@@ -28,12 +30,21 @@ class ChatService
         return $conversation;
     }
 
-    public function sendMessage(Conversation $conversation, string $senderType, string $body, ?string $senderName = null): Message
-    {
+    public function sendMessage(
+        Conversation $conversation,
+        string $senderType,
+        ?string $body,
+        ?string $senderName = null,
+        ?UploadedFile $image = null,
+    ): Message {
+        $attachmentPath = $image?->store('chat-attachments', 'public');
+
         $message = $conversation->messages()->create([
             'sender_type' => $senderType,
             'sender_name' => $senderName,
-            'body' => $body,
+            'type' => $attachmentPath ? 'image' : 'text',
+            'body' => $body ?? '',
+            'attachment_path' => $attachmentPath,
         ]);
 
         $conversation->update(['last_message_at' => $message->created_at]);
@@ -41,6 +52,13 @@ class ChatService
         MessageSent::dispatch($message->setRelation('conversation', $conversation));
 
         return $message;
+    }
+
+    public function closeConversation(Conversation $conversation, string $closedBy): void
+    {
+        $conversation->update(['status' => 'closed']);
+
+        ConversationClosed::dispatch($conversation, $closedBy);
     }
 
     public function assignAgent(Conversation $conversation, User $agent): void

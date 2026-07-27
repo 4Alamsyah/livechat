@@ -4,8 +4,8 @@ import echo from '@/echo';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { type BreadcrumbItem } from '@/types';
 import { Head } from '@inertiajs/vue3';
-import { Mic, MicOff, PhoneOff, Send, Video, VideoOff } from 'lucide-vue-next';
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { Image as ImageIcon, Mic, MicOff, PhoneOff, Send, Video, VideoOff, XCircle } from 'lucide-vue-next';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 
 interface AgentSummary {
     id: number;
@@ -24,13 +24,21 @@ interface ConversationSummary {
     created_at: string;
     agent?: AgentSummary | null;
     messages_count?: number;
+    unread_count?: number;
+}
+
+interface ToastPayload {
+    title: string;
+    body: string;
 }
 
 interface ChatMessage {
     id?: number;
     sender_type: 'visitor' | 'agent' | 'system';
     sender_name: string | null;
+    type?: 'text' | 'image';
     body: string;
+    attachment_url?: string | null;
     created_at: string;
 }
 
@@ -58,8 +66,13 @@ const messages = ref<ChatMessage[]>([]);
 const messageInput = ref('');
 const messagesEl = ref<HTMLElement | null>(null);
 const loadingMessages = ref(false);
+const toast = ref<ToastPayload | null>(null);
+const imageInputEl = ref<HTMLInputElement | null>(null);
 
-let conversationChannelName: string | null = null;
+const isClosed = computed(() => selected.value?.status === 'closed');
+
+const subscribedChannels = new Set<string>();
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
 // -- Calling state --------------------------------------------------------
 const inCall = ref(false);
@@ -116,6 +129,19 @@ async function agentFetch(url: string, options: RequestInit = {}) {
     return res.json();
 }
 
+async function agentUpload(url: string, formData: FormData) {
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'X-XSRF-TOKEN': xsrfToken() },
+        body: formData,
+        credentials: 'same-origin',
+    });
+    if (!res.ok) {
+        throw new Error('Request failed (' + res.status + ')');
+    }
+    return res.json();
+}
+
 function scrollToBottom() {
     nextTick(() => {
         if (messagesEl.value) {
@@ -124,14 +150,81 @@ function scrollToBottom() {
     });
 }
 
-async function selectConversation(conversation: ConversationSummary) {
-    if (conversationChannelName) {
-        echo.leave(conversationChannelName);
-        conversationChannelName = null;
+function subscribeToConversation(uuid: string) {
+    if (subscribedChannels.has(uuid)) {
+        return;
     }
+    subscribedChannels.add(uuid);
+    echo.channel('conversation.' + uuid)
+        .listen('.message.sent', (payload: ChatMessage) => handleIncomingMessage(uuid, payload))
+        .listen('.call.signal', (payload: CallSignalPayload) => {
+            if (selected.value?.uuid === uuid) {
+                handleCallSignal(payload);
+            }
+        })
+        .listen('.conversation.closed', (payload: { closed_by: 'agent' | 'visitor' }) => {
+            if (payload.closed_by !== 'agent') {
+                applyConversationClosed(uuid, payload.closed_by);
+            }
+        });
+}
+
+function applyConversationClosed(uuid: string, closedBy: 'agent' | 'visitor') {
+    const conversation = conversations.value.find((c) => c.uuid === uuid);
+    if (conversation?.status === 'closed') {
+        return;
+    }
+    if (conversation) {
+        conversation.status = 'closed';
+    }
+    if (selected.value?.uuid === uuid) {
+        messages.value.push({
+            sender_type: 'system',
+            sender_name: null,
+            body: closedBy === 'visitor' ? 'Visitor ended the chat.' : 'You ended the chat.',
+            created_at: new Date().toISOString(),
+        });
+        scrollToBottom();
+        endCall(false);
+    }
+}
+
+function handleIncomingMessage(uuid: string, payload: ChatMessage) {
+    if (selected.value?.uuid === uuid) {
+        if (payload.sender_type !== 'agent') {
+            messages.value.push(payload);
+            scrollToBottom();
+        }
+        return;
+    }
+    if (payload.sender_type !== 'visitor') {
+        return;
+    }
+    const conversation = conversations.value.find((c) => c.uuid === uuid);
+    if (conversation) {
+        conversation.unread_count = (conversation.unread_count ?? 0) + 1;
+    }
+    notify(conversation ? conversationLabel(conversation) : 'Visitor', payload.body);
+}
+
+function notify(title: string, body: string) {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
+        new Notification(title, { body });
+    }
+    toast.value = { title, body };
+    if (toastTimer) {
+        clearTimeout(toastTimer);
+    }
+    toastTimer = setTimeout(() => {
+        toast.value = null;
+    }, 6000);
+}
+
+async function selectConversation(conversation: ConversationSummary) {
     endCall(false);
 
     selected.value = conversation;
+    conversation.unread_count = 0;
     messages.value = [];
     loadingMessages.value = true;
 
@@ -142,15 +235,7 @@ async function selectConversation(conversation: ConversationSummary) {
         loadingMessages.value = false;
     }
 
-    conversationChannelName = 'conversation.' + conversation.uuid;
-    echo.channel(conversationChannelName)
-        .listen('.message.sent', (payload: ChatMessage) => {
-            if (payload.sender_type !== 'agent') {
-                messages.value.push(payload);
-                scrollToBottom();
-            }
-        })
-        .listen('.call.signal', handleCallSignal);
+    subscribeToConversation(conversation.uuid);
 }
 
 async function sendMessage() {
@@ -169,6 +254,47 @@ async function sendMessage() {
         });
     } catch {
         messages.value.push({ sender_type: 'system', sender_name: null, body: 'Failed to send message.', created_at: new Date().toISOString() });
+    }
+}
+
+function triggerImagePicker() {
+    imageInputEl.value?.click();
+}
+
+function onImageSelected(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (file) {
+        sendImage(file);
+    }
+}
+
+async function sendImage(file: File) {
+    if (!selected.value) {
+        return;
+    }
+    const formData = new FormData();
+    formData.append('image', file);
+
+    try {
+        const message = await agentUpload(route('agent.conversations.messages.store', selected.value.uuid), formData);
+        messages.value.push(message);
+        scrollToBottom();
+    } catch {
+        messages.value.push({ sender_type: 'system', sender_name: null, body: 'Failed to send image.', created_at: new Date().toISOString() });
+    }
+}
+
+async function endSession() {
+    if (!selected.value) {
+        return;
+    }
+    try {
+        await agentFetch(route('agent.conversations.close', selected.value.uuid), { method: 'POST' });
+        applyConversationClosed(selected.value.uuid, 'agent');
+    } catch {
+        // ignore, agent can retry
     }
 }
 
@@ -331,6 +457,12 @@ function formatTime(iso: string | null): string {
 }
 
 onMounted(() => {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+
+    conversations.value.forEach((conversation) => subscribeToConversation(conversation.uuid));
+
     echo.channel('dashboard').listen('.conversation.started', (payload: { uuid: string; visitor_name: string | null; property_id: string | null; created_at: string }) => {
         conversations.value.unshift({
             id: 0,
@@ -343,14 +475,15 @@ onMounted(() => {
             last_message_at: null,
             created_at: payload.created_at,
             messages_count: 0,
+            unread_count: 0,
         });
+        subscribeToConversation(payload.uuid);
+        notify(payload.visitor_name || 'New visitor', 'Started a new conversation');
     });
 });
 
 onBeforeUnmount(() => {
-    if (conversationChannelName) {
-        echo.leave(conversationChannelName);
-    }
+    subscribedChannels.forEach((uuid) => echo.leave('conversation.' + uuid));
     echo.leave('dashboard');
     endCall(false);
     if (peer) {
@@ -375,7 +508,12 @@ onBeforeUnmount(() => {
                     @click="selectConversation(conversation)"
                 >
                     <div class="flex items-center justify-between">
-                        <span class="font-medium">{{ conversationLabel(conversation) }}</span>
+                        <span class="flex items-center gap-1.5 font-medium">
+                            {{ conversationLabel(conversation) }}
+                            <span v-if="conversation.unread_count" class="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white">
+                                {{ conversation.unread_count > 9 ? '9+' : conversation.unread_count }}
+                            </span>
+                        </span>
                         <span
                             class="rounded-full px-2 py-0.5 text-[10px] uppercase"
                             :class="conversation.status === 'open' ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300' : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'"
@@ -396,6 +534,10 @@ onBeforeUnmount(() => {
                             <div class="font-medium">{{ conversationLabel(selected) }}</div>
                             <div class="text-xs text-muted-foreground">{{ selected.property_id || 'unknown site' }}</div>
                         </div>
+                        <Button v-if="!isClosed" size="sm" variant="outline" @click="endSession">
+                            <XCircle class="mr-1 h-4 w-4" />
+                            End Chat
+                        </Button>
                     </div>
 
                     <div ref="messagesEl" class="flex-1 space-y-3 overflow-y-auto p-4">
@@ -411,7 +553,10 @@ onBeforeUnmount(() => {
                                 class="max-w-[75%] rounded-2xl px-3 py-2 text-sm"
                                 :class="message.sender_type === 'agent' ? 'rounded-br-sm bg-primary text-primary-foreground' : 'rounded-bl-sm bg-muted'"
                             >
-                                {{ message.body }}
+                                <a v-if="message.type === 'image' && message.attachment_url" :href="message.attachment_url" target="_blank" rel="noopener">
+                                    <img :src="message.attachment_url" class="max-h-44 max-w-44 rounded-lg object-cover" :class="{ 'mb-1': message.body }" />
+                                </a>
+                                <template v-if="message.body">{{ message.body }}</template>
                             </div>
                             <div v-else class="text-xs italic text-muted-foreground">{{ message.body }}</div>
                             <div class="mt-1 text-[10px] text-muted-foreground">{{ formatTime(message.created_at) }}</div>
@@ -419,13 +564,18 @@ onBeforeUnmount(() => {
                     </div>
 
                     <form class="flex items-center gap-2 border-t border-sidebar-border/70 p-3 dark:border-sidebar-border" @submit.prevent="sendMessage">
+                        <input ref="imageInputEl" type="file" accept="image/*" class="hidden" @change="onImageSelected" />
+                        <Button type="button" size="icon" variant="outline" :disabled="isClosed" @click="triggerImagePicker">
+                            <ImageIcon class="h-4 w-4" />
+                        </Button>
                         <input
                             v-model="messageInput"
                             type="text"
-                            placeholder="Type a reply..."
-                            class="flex-1 rounded-full border border-input bg-background px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            :placeholder="isClosed ? 'This chat has ended' : 'Type a reply...'"
+                            :disabled="isClosed"
+                            class="flex-1 rounded-full border border-input bg-background px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
                         />
-                        <Button type="submit" size="icon" :disabled="!messageInput.trim()">
+                        <Button type="submit" size="icon" :disabled="!messageInput.trim() || isClosed">
                             <Send class="h-4 w-4" />
                         </Button>
                     </form>
@@ -485,6 +635,16 @@ onBeforeUnmount(() => {
                     Select a visitor to start chatting.
                 </div>
             </div>
+        </div>
+
+        <!-- New message toast -->
+        <div
+            v-if="toast"
+            class="fixed bottom-4 right-4 z-50 w-72 cursor-pointer rounded-lg border border-sidebar-border bg-background p-3 shadow-lg dark:border-sidebar-border"
+            @click="toast = null"
+        >
+            <div class="text-sm font-medium">{{ toast.title }}</div>
+            <div class="mt-1 line-clamp-2 text-sm text-muted-foreground">{{ toast.body }}</div>
         </div>
     </AppLayout>
 </template>
