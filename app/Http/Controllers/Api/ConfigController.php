@@ -21,6 +21,19 @@ class ConfigController extends Controller
             $host = request()->getHost();
         }
 
+        $iceServers = [
+            ['urls' => 'stun:stun.l.google.com:19302'],
+            ['urls' => 'stun:stun1.l.google.com:19302'],
+        ];
+
+        $turnServers = env('TURN_SERVERS');
+        if ($turnServers) {
+            $urls = array_map('trim', explode(',', $turnServers));
+            $iceServers[] = [
+                'urls' => $urls,
+            ];
+        }
+
         return response()->json([
             'reverb' => [
                 'key' => config('broadcasting.connections.reverb.key'),
@@ -28,9 +41,7 @@ class ConfigController extends Controller
                 'port' => config('broadcasting.connections.reverb.options.port'),
                 'scheme' => config('broadcasting.connections.reverb.options.scheme'),
             ],
-            'ice_servers' => [
-                ['urls' => 'stun:stun.l.google.com:19302'],
-            ],
+            'ice_servers' => $iceServers,
         ]);
     }
 }
