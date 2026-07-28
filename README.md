@@ -4,16 +4,275 @@ A modern real-time chat application built with Laravel 12, Inertia.js v2, Vue 3,
 
 ## Embedding the Widget on Another Site
 
-Add one script tag to any page you want the chat bubble to appear on:
+The live chat widget is designed to be embedded on any external website. It's completely self-contained and requires no installation on the embedding site.
+
+### Quick Start
+
+Add one script tag to any page where you want the chat bubble to appear:
 
 ```html
 <script src="https://your-livechat-domain.com/js/widget.js" data-property-id="your-site-id"></script>
 ```
 
-- `data-property-id` identifies which site/property the conversation came from (shown to agents in the dashboard). Use a different value per site if you embed on multiple properties.
-- The widget is self-contained: it injects its own styles, loads Pusher-js and PeerJS from CDN as needed, and talks to `/api/widget/*` on the domain the script was loaded from.
-- Cross-origin requests from the embedding site to the widget API are allowed via `config/cors.php` (`api/*` paths, all origins) — no extra setup needed on the embedding site.
-- Try it locally with [public/demo/index.html](public/demo/index.html), which simulates a third-party site embedding the widget.
+- `https://your-livechat-domain.com` — Replace with your actual live chat server URL
+- `data-property-id="your-site-id"` — Unique identifier for this website/property (shown to agents in the dashboard)
+
+**Example:**
+```html
+<script src="https://livechat.bmt-system2.com/js/widget.js" data-property-id="acme-inc"></script>
+```
+
+### Features
+
+- ✅ **Self-contained** — Injects its own styles, no external CSS needed
+- ✅ **Real-time chat** — WebSocket connection for instant messaging
+- ✅ **Video/Audio calls** — Peer-to-peer communication via PeerJS
+- ✅ **Image sharing** — Visitors can upload and share images
+- ✅ **Screen sharing** — Agent and visitor can share screen with audio
+- ✅ **Notifications** — Toast and browser notifications for new messages
+- ✅ **No dependencies** — All libraries loaded from CDN (Pusher-js, PeerJS)
+- ✅ **CORS enabled** — Works cross-origin (third-party site embedding)
+
+### Local Testing
+
+Try the demo locally:
+
+```bash
+# Start the app
+composer run dev
+
+# Open in browser
+http://localhost:8000/demo/
+```
+
+---
+
+## Installation Guide: Embedding in Your Website
+
+### Option 1: Plain HTML
+
+Add the script tag before closing `</body>` tag:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Website</title>
+</head>
+<body>
+    <h1>Welcome to my website</h1>
+    <p>Our live chat widget appears in the bottom right corner.</p>
+
+    <!-- Add live chat widget -->
+    <script src="https://livechat.bmt-system2.com/js/widget.js" data-property-id="my-website"></script>
+</body>
+</html>
+```
+
+**That's it!** The chat bubble will appear in the bottom-right corner of your page.
+
+---
+
+### Option 2: Vue.js Application
+
+#### Step 1: Create a Widget Component
+
+Create file `resources/js/components/LiveChatWidget.vue`:
+
+```vue
+<script setup lang="ts">
+import { onMounted } from 'vue'
+
+interface Props {
+  propertyId?: string
+}
+
+withDefaults(defineProps<Props>(), {
+  propertyId: 'default-site',
+})
+
+onMounted(() => {
+  // Prevent double-loading
+  if (window.__liveSupportWidgetLoaded) {
+    return
+  }
+
+  // Create and inject script
+  const script = document.createElement('script')
+  script.src = 'https://livechat.bmt-system2.com/js/widget.js'
+  script.setAttribute('data-property-id', propertyId)
+  script.async = true
+
+  script.onerror = () => {
+    console.error('[LiveChatWidget] Failed to load widget')
+  }
+
+  document.body.appendChild(script)
+})
+</script>
+
+<template>
+  <!-- Component renders nothing; widget loads via script -->
+</template>
+```
+
+#### Step 2: Add to Your App Layout (Global)
+
+If you want the widget on **all pages**, add to your main layout:
+
+```vue
+<!-- app.vue or layouts/AppLayout.vue -->
+<script setup>
+import LiveChatWidget from '@/components/LiveChatWidget.vue'
+</script>
+
+<template>
+  <div class="app">
+    <!-- Your navbar, sidebar, etc -->
+    <header>...</header>
+    <main>
+      <slot />
+    </main>
+    
+    <!-- Add widget globally -->
+    <LiveChatWidget property-id="my-vue-app" />
+  </div>
+</template>
+```
+
+#### Step 3 (Optional): Use Only on Specific Pages
+
+If you want the widget on **specific pages only**:
+
+```vue
+<!-- pages/Contact.vue or pages/Support.vue -->
+<script setup>
+import LiveChatWidget from '@/components/LiveChatWidget.vue'
+</script>
+
+<template>
+  <div>
+    <h1>Contact Us</h1>
+    <p>Chat with our team below:</p>
+    
+    <!-- Widget only on this page -->
+    <LiveChatWidget property-id="my-vue-app" />
+  </div>
+</template>
+```
+
+#### Step 4 (Optional): Dynamic Property ID
+
+Use different property IDs for different tenants/customers:
+
+```vue
+<script setup>
+import LiveChatWidget from '@/components/LiveChatWidget.vue'
+import { useRoute } from 'vue-router'
+
+const route = useRoute()
+const propertyId = route.params.customerId || 'default'
+</script>
+
+<template>
+  <div>
+    <LiveChatWidget :property-id="propertyId" />
+  </div>
+</template>
+```
+
+---
+
+### Configuration
+
+#### Custom Property ID
+
+Each website/property should have a unique `data-property-id`:
+
+```html
+<!-- Website 1 -->
+<script src="https://livechat.bmt-system2.com/js/widget.js" data-property-id="acme-inc"></script>
+
+<!-- Website 2 -->
+<script src="https://livechat.bmt-system2.com/js/widget.js" data-property-id="grosir-fashion"></script>
+
+<!-- Website 3 -->
+<script src="https://livechat.bmt-system2.com/js/widget.js" data-property-id="startup-xyz"></script>
+```
+
+In the **agent dashboard**, agents will see conversations grouped by property ID.
+
+#### CDN Resources
+
+The widget automatically loads these from CDN:
+- **Pusher-js** (real-time messaging)
+- **PeerJS** (video/audio/screen sharing)
+
+No additional setup needed on your site.
+
+---
+
+### CORS & Security
+
+Cross-origin requests from your website to the live chat server are allowed via `config/cors.php`:
+
+```php
+'paths' => ['api/*', 'sanctum/csrf-cookie'],
+'allowed_origins' => ['*'],  // Allow requests from any origin
+```
+
+This means:
+- ✅ Websites can embed the widget and communicate with the chat API
+- ✅ No CORS errors
+- ✅ No extra headers or configuration needed
+
+---
+
+### Troubleshooting
+
+#### Widget Not Appearing?
+
+1. **Check the URL** — Verify `https://livechat.bmt-system2.com/js/widget.js` is correct
+2. **Check property ID** — Make sure `data-property-id="..."` is set
+3. **Check browser console** — Open DevTools (F12) → Console tab for errors
+4. **Check network tab** — Verify the script is loading (network tab should show a 200 response)
+
+#### Widget Loading But Chat Not Working?
+
+1. **Check WebSocket connection** — Open DevTools → Network tab → search for "websocket"
+2. **Check server is running** — Ensure live chat server is running (`composer run dev`)
+3. **Check Reverb** — WebSocket server must be running (`php artisan reverb:start`)
+
+#### CORS Error?
+
+If you see `Access to XMLHttpRequest blocked by CORS policy`, make sure:
+
+```php
+// config/cors.php
+'allowed_origins' => ['*'],  // This allows all origins
+'paths' => ['api/*'],
+```
+
+---
+
+### Testing Locally
+
+Run this to test locally before production:
+
+```bash
+# Terminal 1: Start Laravel + Reverb + Vite
+composer run dev
+
+# Terminal 2 (Optional): Start a simple HTTP server for demo
+# Serve public/demo/index.html on port 9000
+php -S localhost:9000 -t public/demo
+```
+
+Then visit:
+- **Live chat dashboard:** `http://localhost:8000/agent/dashboard` (login as agent)
+- **Demo page with widget:** `http://localhost:9000/` (visitor side)
 
 ## Requirements
 
