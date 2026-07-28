@@ -788,6 +788,20 @@
         this.announceIcoEl.textContent = level === 'critical' ? '🚨' : level === 'info' ? 'ℹ️' : '⚠️';
         this.announceTitleEl.textContent = announcement.title || 'Service notice';
         this.announceBodyEl.textContent = announcement.message;
+        if (level === 'critical') {
+            this.playAlert();
+        }
+    };
+
+    Widget.prototype.playAlert = function () {
+        try {
+            var audio = new Audio(BASE_URL + '/alarm/danger.mp3');
+            audio.play().catch(function () {
+                console.log('[live-support] autoplay blocked, user interaction required');
+            });
+        } catch (err) {
+            console.error('[live-support] failed to play alert', err);
+        }
     };
 
     Widget.prototype.hideAnnouncement = function () {
