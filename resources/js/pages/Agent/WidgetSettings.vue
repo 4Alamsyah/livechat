@@ -209,7 +209,28 @@ async function save() {
 
     try {
         const result = await agentUpload(route('agent.widget-settings.store'), data);
-        form.value.logo_url = result.logo_url || null;
+        const hours = defaultBusinessHours();
+        for (const day of DAYS) {
+            if (result.business_hours && result.business_hours[day.key]) {
+                hours[day.key] = { ...hours[day.key], ...result.business_hours[day.key] };
+            }
+        }
+        form.value = {
+            property_id: result.property_id,
+            primary_color: result.primary_color || '#2563eb',
+            position: result.position === 'bottom-left' ? 'bottom-left' : 'bottom-right',
+            brand_name: result.brand_name || '',
+            welcome_message: result.welcome_message || '',
+            require_name: !!result.require_name,
+            collect_email: !!result.collect_email,
+            require_email: !!result.require_email,
+            collect_topic: !!result.collect_topic,
+            timezone: result.timezone || 'Asia/Jakarta',
+            business_hours_enabled: !!result.business_hours_enabled,
+            business_hours: hours,
+            offline_message: result.offline_message || '',
+            logo_url: result.logo_url || null,
+        };
         logoPreview.value = result.logo_url || null;
         logoFile.value = null;
         removeLogo.value = false;
