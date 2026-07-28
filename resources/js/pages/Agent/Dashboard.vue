@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import echo from '@/echo';
 import AppLayout from '@/layouts/AppLayout.vue';
+import { agentFetch, agentUpload } from '@/lib/agent-api';
 import { type BreadcrumbItem } from '@/types';
 import { Head } from '@inertiajs/vue3';
 import {
@@ -152,39 +153,6 @@ function loadPeerJs(): Promise<void> {
         });
     }
     return peerjsScriptPromise;
-}
-
-function xsrfToken(): string {
-    const match = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
-    return match ? decodeURIComponent(match[1]) : '';
-}
-
-async function agentFetch(url: string, options: RequestInit = {}) {
-    const headers: Record<string, string> = { Accept: 'application/json', 'X-XSRF-TOKEN': xsrfToken() };
-    if (options.body) {
-        headers['Content-Type'] = 'application/json';
-    }
-    const res = await fetch(url, { ...options, headers, credentials: 'same-origin' });
-    if (!res.ok) {
-        throw new Error('Request failed (' + res.status + ')');
-    }
-    if (res.status === 204) {
-        return null;
-    }
-    return res.json();
-}
-
-async function agentUpload(url: string, formData: FormData) {
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'X-XSRF-TOKEN': xsrfToken() },
-        body: formData,
-        credentials: 'same-origin',
-    });
-    if (!res.ok) {
-        throw new Error('Request failed (' + res.status + ')');
-    }
-    return res.json();
 }
 
 function scrollToBottom() {

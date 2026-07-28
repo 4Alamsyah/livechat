@@ -133,23 +133,46 @@
         }
     }
 
+    /** Computes a darker shade of a hex color for hover states. */
+    function darkenColor(hex, amount) {
+        hex = (hex || '#2563eb').replace('#', '');
+        if (hex.length === 3) {
+            hex = hex.split('').map(function (c) {
+                return c + c;
+            }).join('');
+        }
+        var num = parseInt(hex, 16);
+        if (isNaN(num)) {
+            return '#1d4ed8';
+        }
+        var channel = function (shift) {
+            var value = Math.max(0, Math.floor(((num >> shift) & 0xff) * (1 - amount)));
+            return ('0' + value.toString(16)).slice(-2);
+        };
+        return '#' + channel(16) + channel(8) + channel(0);
+    }
+
     // ---------------------------------------------------------------------
     // Styles
     // ---------------------------------------------------------------------
 
-    var STYLE = '\
-        .lc-launcher{position:fixed;bottom:20px;right:20px;width:60px;height:60px;border-radius:50%;\
-            background:#2563eb;color:#fff;border:none;box-shadow:0 6px 18px rgba(0,0,0,.25);cursor:pointer;\
+    function buildStyle(color, side) {
+        var hover = darkenColor(color, 0.15);
+        return '\
+        .lc-launcher{position:fixed;bottom:20px;' + side + ':20px;width:60px;height:60px;border-radius:50%;\
+            background:' + color + ';color:#fff;border:none;box-shadow:0 6px 18px rgba(0,0,0,.25);cursor:pointer;\
             z-index:2147483000;display:flex;align-items:center;justify-content:center;font-size:26px;}\
-        .lc-launcher:hover{background:#1d4ed8;}\
-        .lc-panel{position:fixed;bottom:92px;right:20px;width:340px;max-width:calc(100vw - 24px);\
+        .lc-launcher:hover{background:' + hover + ';}\
+        .lc-panel{position:fixed;bottom:92px;' + side + ':20px;width:340px;max-width:calc(100vw - 24px);\
             height:520px;max-height:calc(100vh - 120px);background:#fff;border-radius:14px;\
             box-shadow:0 12px 40px rgba(0,0,0,.28);z-index:2147483000;display:none;flex-direction:column;\
             overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;\
             font-size:14px;color:#111827;}\
         .lc-panel.lc-open{display:flex;}\
-        .lc-header{background:#2563eb;color:#fff;padding:14px 16px;display:flex;align-items:center;\
+        .lc-header{background:' + color + ';color:#fff;padding:14px 16px;display:flex;align-items:center;\
             justify-content:space-between;}\
+        .lc-header-brand{display:flex;align-items:center;min-width:0;}\
+        .lc-logo{width:24px;height:24px;border-radius:6px;object-fit:cover;margin-right:8px;flex-shrink:0;}\
         .lc-header h3{margin:0;font-size:15px;font-weight:600;}\
         .lc-header .lc-sub{font-size:11px;opacity:.85;}\
         .lc-header-actions{display:flex;align-items:center;gap:10px;}\
@@ -160,14 +183,17 @@
         .lc-body{flex:1;display:flex;flex-direction:column;min-height:0;}\
         .lc-prechat{padding:16px;display:flex;flex-direction:column;gap:10px;}\
         .lc-prechat input{padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;}\
-        .lc-prechat button{padding:10px;border:none;border-radius:8px;background:#2563eb;color:#fff;\
+        .lc-prechat button{padding:10px;border:none;border-radius:8px;background:' + color + ';color:#fff;\
             font-weight:600;cursor:pointer;}\
+        .lc-welcome{margin:0;font-size:13px;line-height:1.4;color:#374151;}\
+        .lc-offline-banner{background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-size:12px;\
+            line-height:1.4;border-radius:8px;padding:9px 11px;}\
         .lc-messages{flex:1;overflow-y:auto;padding:12px;background:#f9fafb;}\
         .lc-msg{margin-bottom:10px;display:flex;flex-direction:column;max-width:82%;}\
         .lc-msg.visitor{margin-left:auto;align-items:flex-end;}\
         .lc-msg.agent,.lc-msg.system{margin-right:auto;align-items:flex-start;}\
         .lc-bubble{padding:8px 12px;border-radius:14px;white-space:pre-wrap;word-break:break-word;}\
-        .lc-msg.visitor .lc-bubble{background:#2563eb;color:#fff;border-bottom-right-radius:4px;}\
+        .lc-msg.visitor .lc-bubble{background:' + color + ';color:#fff;border-bottom-right-radius:4px;}\
         .lc-msg.agent .lc-bubble{background:#e5e7eb;color:#111827;border-bottom-left-radius:4px;}\
         .lc-msg.system .lc-bubble{background:transparent;color:#6b7280;font-size:12px;font-style:italic;padding:0;}\
         .lc-meta{font-size:10px;color:#9ca3af;margin-top:2px;}\
@@ -179,16 +205,16 @@
         .lc-callbar button span.lc-ico{font-size:16px;}\
         .lc-inputbar{display:flex;gap:8px;padding:10px;border-top:1px solid #e5e7eb;background:#fff;}\
         .lc-inputbar input[type=text]{flex:1;padding:9px 12px;border:1px solid #d1d5db;border-radius:20px;font-size:14px;}\
-        .lc-inputbar button{width:38px;height:38px;border-radius:50%;border:none;background:#2563eb;color:#fff;\
+        .lc-inputbar button{width:38px;height:38px;border-radius:50%;border:none;background:' + color + ';color:#fff;\
             cursor:pointer;font-size:16px;flex-shrink:0;}\
         .lc-inputbar button:disabled{opacity:.5;cursor:not-allowed;}\
         .lc-attach-btn{background:#e5e7eb !important;color:#374151 !important;}\
         .lc-image{display:block;max-width:180px;max-height:180px;border-radius:12px;margin-bottom:2px;\
             object-fit:cover;}\
         .lc-restart-bar{padding:12px;border-top:1px solid #e5e7eb;background:#fff;}\
-        .lc-restart-btn{width:100%;padding:10px;border:none;border-radius:8px;background:#2563eb;color:#fff;\
+        .lc-restart-btn{width:100%;padding:10px;border:none;border-radius:8px;background:' + color + ';color:#fff;\
             font-weight:600;cursor:pointer;font-size:14px;}\
-        .lc-restart-btn:hover{background:#1d4ed8;}\
+        .lc-restart-btn:hover{background:' + hover + ';}\
         .lc-call-panel{position:absolute;inset:0;background:#111827;display:none;flex-direction:column;z-index:5;}\
         .lc-call-panel.lc-active{display:flex;}\
         .lc-call-videos{flex:1;position:relative;background:#000;}\
@@ -210,15 +236,15 @@
         .lc-incoming .lc-reject{background:#dc2626;color:#fff;}\
         .lc-badge{position:absolute;top:-4px;right:-4px;background:#dc2626;color:#fff;border-radius:50%;\
             width:18px;height:18px;font-size:11px;display:flex;align-items:center;justify-content:center;}\
-        .lc-toast{position:fixed;bottom:92px;right:20px;width:280px;max-width:calc(100vw - 24px);\
+        .lc-toast{position:fixed;bottom:92px;' + side + ':20px;width:280px;max-width:calc(100vw - 24px);\
             background:#fff;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:12px 14px;\
             z-index:2147483000;display:none;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,\
             "Segoe UI",Roboto,Helvetica,Arial,sans-serif;}\
         .lc-toast.lc-show{display:block;}\
-        .lc-toast-title{font-size:12px;font-weight:700;color:#2563eb;margin-bottom:3px;}\
+        .lc-toast-title{font-size:12px;font-weight:700;color:' + color + ';margin-bottom:3px;}\
         .lc-toast-body{font-size:13px;color:#111827;overflow:hidden;text-overflow:ellipsis;\
             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}\
-        .lc-announce{position:fixed;bottom:92px;right:20px;width:320px;max-width:calc(100vw - 24px);\
+        .lc-announce{position:fixed;bottom:92px;' + side + ':20px;width:320px;max-width:calc(100vw - 24px);\
             background:#fff;border-radius:12px;border-left:4px solid #d97706;\
             box-shadow:0 12px 34px rgba(0,0,0,.28);padding:13px 15px;z-index:2147483001;display:none;\
             font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;\
@@ -236,23 +262,25 @@
             background:#f3f4f6;color:#374151;font-size:12px;font-weight:600;cursor:pointer;}\
         .lc-announce-dismiss:hover{background:#e5e7eb;}\
         @keyframes lc-announce-in{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}\
-    ';
+        ';
+    }
 
-    function injectStyles() {
-        if (document.getElementById('lc-widget-styles')) {
-            return;
+    function injectStyles(color, side) {
+        var existing = document.getElementById('lc-widget-styles');
+        if (!existing) {
+            existing = document.createElement('style');
+            existing.id = 'lc-widget-styles';
+            document.head.appendChild(existing);
         }
-        var style = document.createElement('style');
-        style.id = 'lc-widget-styles';
-        style.textContent = STYLE;
-        document.head.appendChild(style);
+        existing.textContent = buildStyle(color, side);
     }
 
     // ---------------------------------------------------------------------
     // Widget class
     // ---------------------------------------------------------------------
 
-    function Widget() {
+    function Widget(settings) {
+        this.settings = settings || {};
         this.visitorId = getVisitorId();
         this.visitorName = localStorage.getItem(STORAGE_NAME_KEY) || '';
         this.conversationUuid = sessionStorage.getItem(STORAGE_CONVERSATION_KEY) || null;
@@ -280,7 +308,10 @@
     }
 
     Widget.prototype.buildDom = function () {
-        injectStyles();
+        var settings = this.settings;
+        var side = settings.position === 'bottom-left' ? 'left' : 'right';
+        var isOnline = settings.is_online !== false;
+        injectStyles(settings.primary_color || '#2563eb', side);
 
         var launcher = document.createElement('button');
         launcher.className = 'lc-launcher';
@@ -314,11 +345,31 @@
         this.announceBodyEl = announce.querySelector('.lc-announce-body');
         this.announceDismissEl = announce.querySelector('.lc-announce-dismiss');
 
+        var brandName = settings.brand_name || 'Live Support';
+        var logoHtml = settings.logo_url
+            ? '<img class="lc-logo" src="' + escapeHtml(settings.logo_url) + '" alt="" />'
+            : '';
+        var welcomeHtml = settings.welcome_message
+            ? '<p class="lc-welcome">' + escapeHtml(settings.welcome_message) + '</p>'
+            : '';
+        var offlineHtml = !isOnline && settings.offline_message
+            ? '<div class="lc-offline-banner">' + escapeHtml(settings.offline_message) + '</div>'
+            : '';
+        var emailHtml = settings.collect_email
+            ? '<input type="email" class="lc-email-input"' + (settings.require_email ? ' required' : '') +
+              ' placeholder="Your email' + (settings.require_email ? '' : ' (optional)') + '" />'
+            : '';
+        var topicHtml = settings.collect_topic
+            ? '<input type="text" class="lc-topic-input" placeholder="What can we help with? (optional)" />'
+            : '';
+
         var panel = document.createElement('div');
         panel.className = 'lc-panel';
         panel.innerHTML =
             '<div class="lc-header">' +
-                '<div><h3>Live Support</h3><div class="lc-sub">We usually reply in a few minutes</div></div>' +
+                '<div class="lc-header-brand">' + logoHtml +
+                    '<div><h3>' + escapeHtml(brandName) + '</h3><div class="lc-sub">We usually reply in a few minutes</div></div>' +
+                '</div>' +
                 '<div class="lc-header-actions">' +
                     '<button class="lc-end-btn" style="display:none;" title="End chat">End chat</button>' +
                     '<button class="lc-close" aria-label="Close">&times;</button>' +
@@ -326,7 +377,10 @@
             '</div>' +
             '<div class="lc-body" style="position:relative;">' +
                 '<div class="lc-prechat">' +
-                    '<input type="text" class="lc-name-input" placeholder="Your name (optional)" />' +
+                    offlineHtml + welcomeHtml +
+                    '<input type="text" class="lc-name-input"' + (settings.require_name ? ' required' : '') +
+                    ' placeholder="Your name' + (settings.require_name ? '' : ' (optional)') + '" />' +
+                    emailHtml + topicHtml +
                     '<button class="lc-start-btn">Start Chat</button>' +
                 '</div>' +
                 '<div class="lc-chatview" style="display:none;flex:1;flex-direction:column;min-height:0;">' +
@@ -370,6 +424,8 @@
         this.panelEl = panel;
 
         this.nameInputEl = panel.querySelector('.lc-name-input');
+        this.emailInputEl = panel.querySelector('.lc-email-input');
+        this.topicInputEl = panel.querySelector('.lc-topic-input');
         this.startBtnEl = panel.querySelector('.lc-start-btn');
         this.prechatEl = panel.querySelector('.lc-prechat');
         this.chatViewEl = panel.querySelector('.lc-chatview');
@@ -540,6 +596,18 @@
     Widget.prototype.startConversation = function () {
         var self = this;
         var name = this.nameInputEl.value.trim();
+        var email = this.emailInputEl ? this.emailInputEl.value.trim() : '';
+        var topic = this.topicInputEl ? this.topicInputEl.value.trim() : '';
+
+        if (this.nameInputEl.hasAttribute('required') && !name) {
+            this.nameInputEl.reportValidity();
+            return;
+        }
+        if (this.emailInputEl && this.emailInputEl.hasAttribute('required') && !this.emailInputEl.checkValidity()) {
+            this.emailInputEl.reportValidity();
+            return;
+        }
+
         this.visitorName = name;
         localStorage.setItem(STORAGE_NAME_KEY, name);
 
@@ -552,6 +620,8 @@
                 property_id: PROPERTY_ID,
                 visitor_id: this.visitorId,
                 visitor_name: name || null,
+                visitor_email: email || null,
+                topic: topic || null,
             },
         })
             .then(function (data) {
@@ -1085,7 +1155,13 @@
     // ---------------------------------------------------------------------
 
     function boot() {
-        new Widget();
+        api('/api/widget/settings?property_id=' + encodeURIComponent(PROPERTY_ID))
+            .catch(function () {
+                return {};
+            })
+            .then(function (settings) {
+                new Widget(settings || {});
+            });
     }
 
     if (document.readyState === 'loading') {

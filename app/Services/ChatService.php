@@ -14,7 +14,7 @@ use Illuminate\Http\UploadedFile;
 class ChatService
 {
     /**
-     * @param  array{property_id?: string|null, visitor_id: string, visitor_name?: string|null}  $data
+     * @param  array{property_id?: string|null, visitor_id: string, visitor_name?: string|null, visitor_email?: string|null, topic?: string|null}  $data
      */
     public function startConversation(array $data): Conversation
     {
@@ -22,6 +22,8 @@ class ChatService
             'property_id' => $data['property_id'] ?? null,
             'visitor_id' => $data['visitor_id'],
             'visitor_name' => $data['visitor_name'] ?? null,
+            'visitor_email' => $data['visitor_email'] ?? null,
+            'topic' => $data['topic'] ?? null,
             'status' => 'open',
         ]);
 

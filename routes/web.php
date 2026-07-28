@@ -3,6 +3,7 @@
 use App\Http\Controllers\Agent\AnnouncementController;
 use App\Http\Controllers\Agent\ConversationController;
 use App\Http\Controllers\Agent\DashboardController;
+use App\Http\Controllers\Agent\WidgetSettingsController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
@@ -25,6 +26,10 @@ Route::middleware(['auth', 'verified'])->prefix('agent')->name('agent.')->group(
     Route::post('announcements', [AnnouncementController::class, 'store'])->name('announcements.store');
     Route::post('announcements/{announcement}/deactivate', [AnnouncementController::class, 'deactivate'])->name('announcements.deactivate');
     Route::get('property-ids', [AnnouncementController::class, 'propertyIds'])->name('property-ids');
+
+    Route::get('widget-settings', [WidgetSettingsController::class, 'index'])->name('widget-settings.index');
+    Route::get('widget-settings/show', [WidgetSettingsController::class, 'show'])->name('widget-settings.show');
+    Route::post('widget-settings', [WidgetSettingsController::class, 'store'])->name('widget-settings.store');
 });
 
 require __DIR__.'/settings.php';

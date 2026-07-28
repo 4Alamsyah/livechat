@@ -21,6 +21,8 @@ class Conversation extends Model
         'property_id',
         'visitor_id',
         'visitor_name',
+        'visitor_email',
+        'topic',
         'agent_id',
         'status',
         'last_message_at',
