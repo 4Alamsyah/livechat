@@ -4,7 +4,7 @@ import echo from '@/echo';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { type BreadcrumbItem } from '@/types';
 import { Head } from '@inertiajs/vue3';
-import { Image as ImageIcon, Mic, MicOff, PhoneOff, Send, Video, VideoOff, XCircle } from 'lucide-vue-next';
+import { ArrowLeft, Image as ImageIcon, MessageSquare, Mic, MicOff, PhoneOff, Search, Send, Video, VideoOff, XCircle } from 'lucide-vue-next';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 
 interface AgentSummary {
@@ -70,6 +70,23 @@ const toast = ref<ToastPayload | null>(null);
 const imageInputEl = ref<HTMLInputElement | null>(null);
 
 const isClosed = computed(() => selected.value?.status === 'closed');
+
+// -- List filtering & responsive master/detail -----------------------------
+const search = ref('');
+const showDetailOnMobile = ref(false);
+
+const filteredConversations = computed(() => {
+    const term = search.value.trim().toLowerCase();
+    if (!term) {
+        return conversations.value;
+    }
+    return conversations.value.filter(
+        (conversation) =>
+            conversationLabel(conversation).toLowerCase().includes(term) || (conversation.property_id ?? '').toLowerCase().includes(term),
+    );
+});
+
+const openCount = computed(() => conversations.value.filter((conversation) => conversation.status === 'open').length);
 
 const subscribedChannels = new Set<string>();
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -224,12 +241,13 @@ async function selectConversation(conversation: ConversationSummary) {
     endCall(false);
 
     selected.value = conversation;
+    showDetailOnMobile.value = true;
     conversation.unread_count = 0;
     messages.value = [];
     loadingMessages.value = true;
 
     try {
-        messages.value = await agentFetch(route('agent.conversations.messages', conversation.uuid));
+        messages.value = await agentFetch(route('agent.conversations.messages', { uuid: conversation.uuid }));
         scrollToBottom();
     } finally {
         loadingMessages.value = false;
@@ -248,7 +266,7 @@ async function sendMessage() {
     scrollToBottom();
 
     try {
-        await agentFetch(route('agent.conversations.messages.store', selected.value.uuid), {
+        await agentFetch(route('agent.conversations.messages.store', { uuid: selected.value.uuid }), {
             method: 'POST',
             body: JSON.stringify({ body }),
         });
@@ -278,7 +296,7 @@ async function sendImage(file: File) {
     formData.append('image', file);
 
     try {
-        const message = await agentUpload(route('agent.conversations.messages.store', selected.value.uuid), formData);
+        const message = await agentUpload(route('agent.conversations.messages.store', { uuid: selected.value.uuid }), formData);
         messages.value.push(message);
         scrollToBottom();
     } catch {
@@ -291,7 +309,7 @@ async function endSession() {
         return;
     }
     try {
-        await agentFetch(route('agent.conversations.close', selected.value.uuid), { method: 'POST' });
+        await agentFetch(route('agent.conversations.close', { uuid: selected.value.uuid }), { method: 'POST' });
         applyConversationClosed(selected.value.uuid, 'agent');
     } catch {
         // ignore, agent can retry
@@ -366,7 +384,7 @@ async function acceptIncomingCall() {
             bindCallEvents(call);
         }
 
-        await agentFetch(route('agent.conversations.call', selected.value.uuid), {
+        await agentFetch(route('agent.conversations.call', { uuid: selected.value.uuid }), {
             method: 'POST',
             body: JSON.stringify({ type: 'accept', peer_id: p.id }),
         });
@@ -378,7 +396,7 @@ async function acceptIncomingCall() {
 
 async function rejectIncomingCall() {
     if (selected.value) {
-        await agentFetch(route('agent.conversations.call', selected.value.uuid), {
+        await agentFetch(route('agent.conversations.call', { uuid: selected.value.uuid }), {
             method: 'POST',
             body: JSON.stringify({ type: 'reject' }),
         }).catch(() => {});
@@ -449,6 +467,37 @@ function conversationLabel(conversation: ConversationSummary): string {
     return conversation.visitor_name || 'Visitor ' + conversation.visitor_id.slice(0, 8);
 }
 
+const AVATAR_TONES = [
+    'bg-blue-500/15 text-blue-600 dark:text-blue-400',
+    'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+    'bg-violet-500/15 text-violet-600 dark:text-violet-400',
+    'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+    'bg-rose-500/15 text-rose-600 dark:text-rose-400',
+    'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400',
+];
+
+function conversationInitials(conversation: ConversationSummary): string {
+    const words = conversationLabel(conversation).split(' ').filter(Boolean);
+    return words
+        .slice(0, 2)
+        .map((word) => word[0])
+        .join('')
+        .toUpperCase();
+}
+
+function avatarTone(conversation: ConversationSummary): string {
+    const seed = conversation.uuid || conversation.visitor_id;
+    let hash = 0;
+    for (let index = 0; index < seed.length; index++) {
+        hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+    }
+    return AVATAR_TONES[hash % AVATAR_TONES.length];
+}
+
+function backToList() {
+    showDetailOnMobile.value = false;
+}
+
 function formatTime(iso: string | null): string {
     if (!iso) {
         return '';
@@ -496,52 +545,126 @@ onBeforeUnmount(() => {
     <Head title="Live Chat" />
 
     <AppLayout :breadcrumbs="breadcrumbs">
-        <div class="flex h-[calc(100vh-8rem)] gap-4 p-4">
+        <div class="flex h-[calc(100dvh-4rem)] overflow-hidden md:gap-4 md:p-4">
             <!-- Conversation list -->
-            <div class="w-72 shrink-0 overflow-y-auto rounded-xl border border-sidebar-border/70 dark:border-sidebar-border">
-                <div class="border-b border-sidebar-border/70 p-3 text-sm font-semibold dark:border-sidebar-border">Visitors</div>
-                <button
-                    v-for="conversation in conversations"
-                    :key="conversation.uuid"
-                    class="flex w-full flex-col gap-1 border-b border-sidebar-border/50 p-3 text-left text-sm hover:bg-accent"
-                    :class="{ 'bg-accent': selected?.uuid === conversation.uuid }"
-                    @click="selectConversation(conversation)"
-                >
-                    <div class="flex items-center justify-between">
-                        <span class="flex items-center gap-1.5 font-medium">
-                            {{ conversationLabel(conversation) }}
-                            <span v-if="conversation.unread_count" class="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white">
-                                {{ conversation.unread_count > 9 ? '9+' : conversation.unread_count }}
+            <aside
+                class="w-full flex-col overflow-hidden bg-card md:w-72 md:shrink-0 md:rounded-2xl md:border md:border-sidebar-border/70 md:shadow-sm lg:w-80 dark:md:border-sidebar-border"
+                :class="showDetailOnMobile ? 'hidden md:flex' : 'flex'"
+            >
+                <div class="shrink-0 space-y-3 border-b border-sidebar-border/70 p-3 sm:p-4 dark:border-sidebar-border">
+                    <div class="flex items-center justify-between gap-2">
+                        <h2 class="text-sm font-semibold tracking-tight">Visitors</h2>
+                        <span class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                            {{ openCount }} open
+                        </span>
+                    </div>
+                    <div class="relative">
+                        <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                            v-model="search"
+                            type="search"
+                            placeholder="Search visitors..."
+                            class="h-9 w-full rounded-lg border border-input bg-background pl-9 pr-3 text-sm outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/30"
+                        />
+                    </div>
+                </div>
+
+                <div class="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+                    <button
+                        v-for="conversation in filteredConversations"
+                        :key="conversation.uuid"
+                        class="group relative flex w-full items-center gap-3 rounded-xl p-2.5 text-left transition-colors hover:bg-accent"
+                        :class="{ 'bg-accent': selected?.uuid === conversation.uuid }"
+                        @click="selectConversation(conversation)"
+                    >
+                        <span
+                            v-if="selected?.uuid === conversation.uuid"
+                            class="absolute inset-y-2 left-0 w-0.5 rounded-full bg-primary"
+                        ></span>
+                        <span class="relative shrink-0">
+                            <span
+                                class="flex h-10 w-10 items-center justify-center rounded-full text-xs font-semibold"
+                                :class="avatarTone(conversation)"
+                            >
+                                {{ conversationInitials(conversation) }}
+                            </span>
+                            <span
+                                class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card"
+                                :class="conversation.status === 'open' ? 'bg-emerald-500' : 'bg-muted-foreground/40'"
+                            ></span>
+                        </span>
+                        <span class="min-w-0 flex-1">
+                            <span class="flex items-center justify-between gap-2">
+                                <span class="truncate text-sm font-medium">{{ conversationLabel(conversation) }}</span>
+                                <span class="shrink-0 text-[10px] text-muted-foreground">
+                                    {{ formatTime(conversation.last_message_at ?? conversation.created_at) }}
+                                </span>
+                            </span>
+                            <span class="mt-0.5 flex items-center justify-between gap-2">
+                                <span class="truncate text-xs text-muted-foreground">{{ conversation.property_id || 'unknown site' }}</span>
+                                <span
+                                    v-if="conversation.unread_count"
+                                    class="flex h-5 min-w-[1.25rem] shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground"
+                                >
+                                    {{ conversation.unread_count > 9 ? '9+' : conversation.unread_count }}
+                                </span>
                             </span>
                         </span>
-                        <span
-                            class="rounded-full px-2 py-0.5 text-[10px] uppercase"
-                            :class="conversation.status === 'open' ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300' : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'"
-                        >
-                            {{ conversation.status }}
-                        </span>
+                    </button>
+
+                    <div v-if="filteredConversations.length === 0" class="flex flex-col items-center gap-2 px-4 py-12 text-center">
+                        <MessageSquare class="h-8 w-8 text-muted-foreground/40" />
+                        <p class="text-sm text-muted-foreground">
+                            {{ search ? 'No visitors match your search.' : 'No visitors yet.' }}
+                        </p>
                     </div>
-                    <span class="text-xs text-muted-foreground">{{ conversation.property_id || 'unknown site' }}</span>
-                </button>
-                <div v-if="conversations.length === 0" class="p-4 text-sm text-muted-foreground">No visitors yet.</div>
-            </div>
+                </div>
+            </aside>
 
             <!-- Conversation detail -->
-            <div class="relative flex flex-1 flex-col overflow-hidden rounded-xl border border-sidebar-border/70 dark:border-sidebar-border">
+            <section
+                class="relative min-w-0 flex-1 flex-col overflow-hidden bg-card md:rounded-2xl md:border md:border-sidebar-border/70 md:shadow-sm dark:md:border-sidebar-border"
+                :class="showDetailOnMobile ? 'flex' : 'hidden md:flex'"
+            >
                 <template v-if="selected">
-                    <div class="flex items-center justify-between border-b border-sidebar-border/70 p-3 dark:border-sidebar-border">
-                        <div>
-                            <div class="font-medium">{{ conversationLabel(selected) }}</div>
-                            <div class="text-xs text-muted-foreground">{{ selected.property_id || 'unknown site' }}</div>
+                    <header class="flex shrink-0 items-center gap-3 border-b border-sidebar-border/70 p-3 dark:border-sidebar-border">
+                        <button
+                            type="button"
+                            class="-ml-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-accent md:hidden"
+                            aria-label="Back to visitors"
+                            @click="backToList"
+                        >
+                            <ArrowLeft class="h-4 w-4" />
+                        </button>
+                        <span
+                            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold"
+                            :class="avatarTone(selected)"
+                        >
+                            {{ conversationInitials(selected) }}
+                        </span>
+                        <div class="min-w-0 flex-1">
+                            <div class="truncate text-sm font-semibold">{{ conversationLabel(selected) }}</div>
+                            <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="isClosed ? 'bg-muted-foreground/40' : 'bg-emerald-500'"></span>
+                                <span class="truncate">{{ isClosed ? 'Chat ended' : selected.property_id || 'unknown site' }}</span>
+                            </div>
                         </div>
-                        <Button v-if="!isClosed" size="sm" variant="outline" @click="endSession">
-                            <XCircle class="mr-1 h-4 w-4" />
-                            End Chat
+                        <Button v-if="!isClosed" size="sm" variant="outline" class="shrink-0" @click="endSession">
+                            <XCircle class="h-4 w-4 sm:mr-1.5" />
+                            <span class="hidden sm:inline">End Chat</span>
                         </Button>
-                    </div>
+                    </header>
 
-                    <div ref="messagesEl" class="flex-1 space-y-3 overflow-y-auto p-4">
-                        <div v-if="loadingMessages" class="text-sm text-muted-foreground">Loading messages...</div>
+                    <div ref="messagesEl" class="min-h-0 flex-1 space-y-3 overflow-y-auto bg-muted/20 p-3 sm:p-4">
+                        <div v-if="loadingMessages" class="space-y-3">
+                            <div v-for="n in 3" :key="n" class="flex" :class="n % 2 === 0 ? 'justify-end' : 'justify-start'">
+                                <div class="h-10 animate-pulse rounded-2xl bg-muted" :class="n % 2 === 0 ? 'w-40' : 'w-52'"></div>
+                            </div>
+                        </div>
+                        <div v-else-if="messages.length === 0" class="flex h-full items-center justify-center text-sm text-muted-foreground">
+                            No messages yet — say hello.
+                        </div>
+
                         <div
                             v-for="(message, index) in messages"
                             :key="message.id ?? index"
@@ -550,22 +673,37 @@ onBeforeUnmount(() => {
                         >
                             <div
                                 v-if="message.sender_type !== 'system'"
-                                class="max-w-[75%] rounded-2xl px-3 py-2 text-sm"
-                                :class="message.sender_type === 'agent' ? 'rounded-br-sm bg-primary text-primary-foreground' : 'rounded-bl-sm bg-muted'"
+                                class="max-w-[85%] rounded-2xl px-3.5 py-2 text-sm shadow-sm sm:max-w-[70%]"
+                                :class="
+                                    message.sender_type === 'agent'
+                                        ? 'rounded-br-md bg-primary text-primary-foreground'
+                                        : 'rounded-bl-md border border-sidebar-border/60 bg-card dark:border-sidebar-border'
+                                "
                             >
                                 <a v-if="message.type === 'image' && message.attachment_url" :href="message.attachment_url" target="_blank" rel="noopener">
-                                    <img :src="message.attachment_url" class="max-h-44 max-w-44 rounded-lg object-cover" :class="{ 'mb-1': message.body }" />
+                                    <img
+                                        :src="message.attachment_url"
+                                        class="max-h-52 w-full max-w-[16rem] rounded-xl object-cover transition-opacity hover:opacity-90"
+                                        :class="{ 'mb-1.5': message.body }"
+                                    />
                                 </a>
-                                <template v-if="message.body">{{ message.body }}</template>
+                                <p v-if="message.body" class="whitespace-pre-wrap break-words">{{ message.body }}</p>
                             </div>
-                            <div v-else class="text-xs italic text-muted-foreground">{{ message.body }}</div>
-                            <div class="mt-1 text-[10px] text-muted-foreground">{{ formatTime(message.created_at) }}</div>
+                            <div v-else class="mx-auto rounded-full bg-muted px-3 py-1 text-[11px] italic text-muted-foreground">
+                                {{ message.body }}
+                            </div>
+                            <div v-if="message.sender_type !== 'system'" class="mt-1 px-1 text-[10px] text-muted-foreground">
+                                {{ formatTime(message.created_at) }}
+                            </div>
                         </div>
                     </div>
 
-                    <form class="flex items-center gap-2 border-t border-sidebar-border/70 p-3 dark:border-sidebar-border" @submit.prevent="sendMessage">
+                    <form
+                        class="flex shrink-0 items-center gap-2 border-t border-sidebar-border/70 p-2.5 sm:p-3 dark:border-sidebar-border"
+                        @submit.prevent="sendMessage"
+                    >
                         <input ref="imageInputEl" type="file" accept="image/*" class="hidden" @change="onImageSelected" />
-                        <Button type="button" size="icon" variant="outline" :disabled="isClosed" @click="triggerImagePicker">
+                        <Button type="button" size="icon" variant="outline" class="shrink-0 rounded-full" :disabled="isClosed" @click="triggerImagePicker">
                             <ImageIcon class="h-4 w-4" />
                         </Button>
                         <input
@@ -573,77 +711,119 @@ onBeforeUnmount(() => {
                             type="text"
                             :placeholder="isClosed ? 'This chat has ended' : 'Type a reply...'"
                             :disabled="isClosed"
-                            class="flex-1 rounded-full border border-input bg-background px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+                            class="h-10 min-w-0 flex-1 rounded-full border border-input bg-background px-4 text-sm outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/30 disabled:opacity-50"
                         />
-                        <Button type="submit" size="icon" :disabled="!messageInput.trim() || isClosed">
+                        <Button type="submit" size="icon" class="shrink-0 rounded-full" :disabled="!messageInput.trim() || isClosed">
                             <Send class="h-4 w-4" />
                         </Button>
                     </form>
 
                     <!-- Incoming call banner -->
-                    <div
-                        v-if="pendingInvite"
-                        class="absolute inset-x-4 top-16 z-10 rounded-lg border border-sidebar-border bg-background p-3 shadow-lg"
+                    <Transition
+                        enter-active-class="transition duration-200 ease-out"
+                        enter-from-class="-translate-y-2 opacity-0"
+                        leave-active-class="transition duration-150 ease-in"
+                        leave-to-class="-translate-y-2 opacity-0"
                     >
-                        <p class="text-sm font-medium">
-                            {{ pendingInvite.visitor_name || 'Visitor' }} is calling ({{ pendingInvite.mode }})
-                        </p>
-                        <div class="mt-2 flex gap-2">
-                            <Button size="sm" class="flex-1" @click="acceptIncomingCall">Accept</Button>
-                            <Button size="sm" variant="destructive" class="flex-1" @click="rejectIncomingCall">Decline</Button>
+                        <div
+                            v-if="pendingInvite"
+                            class="absolute inset-x-3 top-[4.5rem] z-10 rounded-2xl border border-sidebar-border bg-background/95 p-3 shadow-xl backdrop-blur sm:inset-x-auto sm:right-4 sm:w-80"
+                        >
+                            <div class="flex items-center gap-3">
+                                <span class="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                                    <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500/30"></span>
+                                    <Video class="relative h-4 w-4" />
+                                </span>
+                                <div class="min-w-0">
+                                    <p class="truncate text-sm font-medium">{{ pendingInvite.visitor_name || 'Visitor' }} is calling</p>
+                                    <p class="text-xs capitalize text-muted-foreground">{{ pendingInvite.mode }} call</p>
+                                </div>
+                            </div>
+                            <div class="mt-3 flex gap-2">
+                                <Button size="sm" class="flex-1" @click="acceptIncomingCall">Accept</Button>
+                                <Button size="sm" variant="destructive" class="flex-1" @click="rejectIncomingCall">Decline</Button>
+                            </div>
                         </div>
-                    </div>
+                    </Transition>
 
                     <!-- In-call panel -->
-                    <div v-if="inCall" class="absolute inset-0 z-20 flex flex-col bg-black">
-                        <div class="relative flex-1">
+                    <div v-if="inCall" class="absolute inset-0 z-20 flex flex-col bg-black md:rounded-2xl md:overflow-hidden">
+                        <div class="relative min-h-0 flex-1">
                             <video ref="remoteVideoEl" autoplay playsinline class="h-full w-full object-contain"></video>
                             <video
                                 ref="localVideoEl"
                                 autoplay
                                 playsinline
                                 muted
-                                class="absolute bottom-3 right-3 h-24 w-32 rounded-lg border-2 border-white object-cover"
+                                class="absolute bottom-3 right-3 h-20 w-28 rounded-xl border border-white/20 object-cover shadow-lg sm:h-24 sm:w-32"
                                 :class="{ hidden: callMode === 'screen' || !localStream }"
                             ></video>
+                            <div
+                                v-if="callStatus"
+                                class="absolute left-1/2 top-3 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 text-xs text-white/90 backdrop-blur"
+                            >
+                                {{ callStatus }}
+                            </div>
                         </div>
-                        <div class="p-1 text-center text-xs text-white/80">{{ callStatus }}</div>
-                        <div class="flex justify-center gap-3 bg-gray-900 p-3">
+                        <div class="flex shrink-0 justify-center gap-3 bg-gray-900/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
                             <button
-                                class="flex h-11 w-11 items-center justify-center rounded-full text-white"
-                                :class="micEnabled ? 'bg-gray-700' : 'bg-red-700'"
+                                type="button"
+                                class="flex h-12 w-12 items-center justify-center rounded-full text-white transition-colors"
+                                :class="micEnabled ? 'bg-white/10 hover:bg-white/20' : 'bg-red-600 hover:bg-red-500'"
+                                :aria-label="micEnabled ? 'Mute microphone' : 'Unmute microphone'"
                                 @click="toggleMic"
                             >
                                 <component :is="micEnabled ? Mic : MicOff" class="h-5 w-5" />
                             </button>
                             <button
                                 v-if="callMode === 'video'"
-                                class="flex h-11 w-11 items-center justify-center rounded-full text-white"
-                                :class="cameraEnabled ? 'bg-gray-700' : 'bg-red-700'"
+                                type="button"
+                                class="flex h-12 w-12 items-center justify-center rounded-full text-white transition-colors"
+                                :class="cameraEnabled ? 'bg-white/10 hover:bg-white/20' : 'bg-red-600 hover:bg-red-500'"
+                                :aria-label="cameraEnabled ? 'Turn camera off' : 'Turn camera on'"
                                 @click="toggleCamera"
                             >
                                 <component :is="cameraEnabled ? Video : VideoOff" class="h-5 w-5" />
                             </button>
-                            <button class="flex h-11 w-11 items-center justify-center rounded-full bg-red-600 text-white" @click="endCall(true)">
+                            <button
+                                type="button"
+                                class="flex h-12 w-12 items-center justify-center rounded-full bg-red-600 text-white transition-colors hover:bg-red-500"
+                                aria-label="Hang up"
+                                @click="endCall(true)"
+                            >
                                 <PhoneOff class="h-5 w-5" />
                             </button>
                         </div>
                     </div>
                 </template>
-                <div v-else class="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-                    Select a visitor to start chatting.
+
+                <div v-else class="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+                    <span class="flex h-12 w-12 items-center justify-center rounded-2xl bg-muted">
+                        <MessageSquare class="h-6 w-6 text-muted-foreground" />
+                    </span>
+                    <div>
+                        <p class="text-sm font-medium">No conversation selected</p>
+                        <p class="mt-1 text-sm text-muted-foreground">Pick a visitor from the list to start chatting.</p>
+                    </div>
                 </div>
-            </div>
+            </section>
         </div>
 
         <!-- New message toast -->
-        <div
-            v-if="toast"
-            class="fixed bottom-4 right-4 z-50 w-72 cursor-pointer rounded-lg border border-sidebar-border bg-background p-3 shadow-lg dark:border-sidebar-border"
-            @click="toast = null"
+        <Transition
+            enter-active-class="transition duration-300 ease-out"
+            enter-from-class="translate-y-2 opacity-0 sm:translate-x-2 sm:translate-y-0"
+            leave-active-class="transition duration-200 ease-in"
+            leave-to-class="translate-y-2 opacity-0 sm:translate-x-2 sm:translate-y-0"
         >
-            <div class="text-sm font-medium">{{ toast.title }}</div>
-            <div class="mt-1 line-clamp-2 text-sm text-muted-foreground">{{ toast.body }}</div>
-        </div>
+            <div
+                v-if="toast"
+                class="fixed inset-x-4 bottom-4 z-50 cursor-pointer rounded-xl border border-sidebar-border bg-background/95 p-3 shadow-xl backdrop-blur sm:inset-x-auto sm:right-4 sm:w-80 dark:border-sidebar-border"
+                @click="toast = null"
+            >
+                <div class="truncate text-sm font-medium">{{ toast.title }}</div>
+                <div class="mt-1 line-clamp-2 text-sm text-muted-foreground">{{ toast.body }}</div>
+            </div>
+        </Transition>
     </AppLayout>
 </template>
