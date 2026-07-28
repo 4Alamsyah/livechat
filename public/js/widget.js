@@ -793,11 +793,28 @@
         }
     };
 
+    /**
+     * Browsers block audio.play() until the visitor has interacted with the
+     * page at least once. If that happens, wait for the first click/tap/key
+     * press anywhere on the page and retry — the alert still gets through,
+     * just slightly delayed instead of silently vanishing.
+     */
     Widget.prototype.playAlert = function () {
         try {
             var audio = new Audio(BASE_URL + '/alarm/danger.mp3');
-            audio.play().catch(function () {
-                console.log('[live-support] autoplay blocked, user interaction required');
+            var attempt = function () {
+                return audio.play();
+            };
+            attempt().catch(function () {
+                var retry = function () {
+                    document.removeEventListener('click', retry);
+                    document.removeEventListener('touchstart', retry);
+                    document.removeEventListener('keydown', retry);
+                    attempt().catch(function () {});
+                };
+                document.addEventListener('click', retry, { once: true });
+                document.addEventListener('touchstart', retry, { once: true });
+                document.addEventListener('keydown', retry, { once: true });
             });
         } catch (err) {
             console.error('[live-support] failed to play alert', err);
