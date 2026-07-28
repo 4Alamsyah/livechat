@@ -342,9 +342,21 @@ function ensurePeer(): Promise<any> {
     return peerReady;
 }
 
-function getLocalStream(mode: 'video' | 'audio' | 'screen'): Promise<MediaStream | null> {
+async function getLocalStream(mode: 'video' | 'audio' | 'screen'): Promise<MediaStream | null> {
     if (mode === 'screen') {
-        return navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => null);
+        try {
+            const displayStream = await navigator.mediaDevices.getDisplayMedia({
+                video: { cursor: 'always' },
+                audio: false,
+            });
+            const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const combined = new MediaStream();
+            displayStream.getVideoTracks().forEach((t) => combined.addTrack(t));
+            audioStream.getAudioTracks().forEach((t) => combined.addTrack(t));
+            return combined;
+        } catch {
+            return null;
+        }
     }
     return navigator.mediaDevices.getUserMedia({ video: mode === 'video', audio: true });
 }
@@ -378,8 +390,8 @@ async function acceptIncomingCall() {
         }
         const p = await ensurePeer();
 
-        if (invite.mode !== 'screen') {
-            const call = p.call(invite.peer_id, localStream || undefined);
+        if (localStream) {
+            const call = p.call(invite.peer_id, localStream);
             bindCallEvents(call);
         }
 
