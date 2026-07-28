@@ -1,10 +1,26 @@
 <script setup lang="ts">
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import echo from '@/echo';
 import AppLayout from '@/layouts/AppLayout.vue';
 import { type BreadcrumbItem } from '@/types';
 import { Head } from '@inertiajs/vue3';
-import { ArrowLeft, Image as ImageIcon, MessageSquare, Mic, MicOff, PhoneOff, Search, Send, Video, VideoOff, XCircle } from 'lucide-vue-next';
+import {
+    ArrowLeft,
+    Image as ImageIcon,
+    Loader2,
+    Megaphone,
+    MessageSquare,
+    Mic,
+    MicOff,
+    PhoneOff,
+    Search,
+    Send,
+    Trash2,
+    Video,
+    VideoOff,
+    XCircle,
+} from 'lucide-vue-next';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 
 interface AgentSummary {
@@ -66,6 +82,7 @@ const messages = ref<ChatMessage[]>([]);
 const messageInput = ref('');
 const messagesEl = ref<HTMLElement | null>(null);
 const loadingMessages = ref(false);
+const endingSession = ref(false);
 const toast = ref<ToastPayload | null>(null);
 const imageInputEl = ref<HTMLInputElement | null>(null);
 
@@ -96,10 +113,21 @@ const inCall = ref(false);
 const callStatus = ref('');
 const callMode = ref<'video' | 'audio' | 'screen' | null>(null);
 const pendingInvite = ref<CallSignalPayload | null>(null);
+const isEndingCall = ref(false);
 const remoteVideoEl = ref<HTMLVideoElement | null>(null);
 const localVideoEl = ref<HTMLVideoElement | null>(null);
 const micEnabled = ref(true);
 const cameraEnabled = ref(true);
+
+const callOverlayState = computed<'connecting' | 'ending' | null>(() => {
+    if (isEndingCall.value) {
+        return 'ending';
+    }
+    if (inCall.value && callStatus.value && callStatus.value !== 'Connected') {
+        return 'connecting';
+    }
+    return null;
+});
 
 const PEERJS_CDN_URL = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
 
@@ -238,7 +266,7 @@ function notify(title: string, body: string) {
 }
 
 async function selectConversation(conversation: ConversationSummary) {
-    endCall(false);
+    endCall(false, true);
 
     selected.value = conversation;
     showDetailOnMobile.value = true;
@@ -305,14 +333,17 @@ async function sendImage(file: File) {
 }
 
 async function endSession() {
-    if (!selected.value) {
+    if (!selected.value || endingSession.value) {
         return;
     }
+    endingSession.value = true;
     try {
         await agentFetch(route('agent.conversations.close', { uuid: selected.value.uuid }), { method: 'POST' });
         applyConversationClosed(selected.value.uuid, 'agent');
     } catch {
         // ignore, agent can retry
+    } finally {
+        endingSession.value = false;
     }
 }
 
@@ -431,13 +462,26 @@ function toggleCamera() {
     cameraEnabled.value = localStream.getVideoTracks().some((t) => t.enabled);
 }
 
-function endCall(notifyRemote: boolean) {
+function endCall(notifyRemote: boolean, immediate = false) {
     if (notifyRemote && selected.value) {
         agentFetch(route('agent.conversations.call', { uuid: selected.value.uuid }), {
             method: 'POST',
             body: JSON.stringify({ type: 'end' }),
         }).catch(() => {});
     }
+    if (!inCall.value) {
+        return;
+    }
+    if (immediate || isEndingCall.value) {
+        finishEndCall();
+        return;
+    }
+    isEndingCall.value = true;
+    callStatus.value = 'Ending call...';
+    window.setTimeout(finishEndCall, 550);
+}
+
+function finishEndCall() {
     if (activeCall) {
         try {
             activeCall.close();
@@ -457,6 +501,7 @@ function endCall(notifyRemote: boolean) {
         localVideoEl.value.srcObject = null;
     }
     inCall.value = false;
+    isEndingCall.value = false;
     callMode.value = null;
     callStatus.value = '';
     micEnabled.value = true;
@@ -531,10 +576,114 @@ onMounted(() => {
     });
 });
 
+// -- Announcements --------------------------------------------------------
+
+type AnnouncementLevel = 'info' | 'warning' | 'critical';
+
+interface Announcement {
+    id: number;
+    title: string | null;
+    message: string;
+    level: AnnouncementLevel;
+    property_ids: string[] | null;
+    expires_at: string | null;
+}
+
+interface WidgetSite {
+    property_id: string;
+    origins: string[];
+    last_seen_at: string | null;
+}
+
+const announcementDialogOpen = ref(false);
+const announcements = ref<Announcement[]>([]);
+const knownSites = ref<WidgetSite[]>([]);
+const sendingAnnouncement = ref(false);
+const announcementError = ref('');
+
+const form = ref({
+    title: '',
+    message: '',
+    level: 'warning' as AnnouncementLevel,
+    allSites: true,
+    targets: [] as string[],
+    customTarget: '',
+    expiresInMinutes: '' as string,
+});
+
+async function openAnnouncementDialog() {
+    announcementDialogOpen.value = true;
+    announcementError.value = '';
+    const [list, sites] = await Promise.all([
+        agentFetch(route('agent.announcements.index')),
+        agentFetch(route('agent.property-ids')),
+    ]);
+    announcements.value = list;
+    knownSites.value = sites;
+}
+
+function toggleTarget(propertyId: string) {
+    const targets = form.value.targets;
+    const index = targets.indexOf(propertyId);
+    if (index === -1) {
+        targets.push(propertyId);
+    } else {
+        targets.splice(index, 1);
+    }
+}
+
+function addCustomTarget() {
+    const value = form.value.customTarget.trim();
+    if (value && !form.value.targets.includes(value)) {
+        form.value.targets.push(value);
+        if (!knownSites.value.some((site) => site.property_id === value)) {
+            knownSites.value.push({ property_id: value, origins: [], last_seen_at: null });
+        }
+    }
+    form.value.customTarget = '';
+}
+
+async function sendAnnouncement() {
+    if (!form.value.message.trim() || sendingAnnouncement.value) {
+        return;
+    }
+    sendingAnnouncement.value = true;
+    announcementError.value = '';
+
+    try {
+        await agentFetch(route('agent.announcements.store'), {
+            method: 'POST',
+            body: JSON.stringify({
+                title: form.value.title.trim() || null,
+                message: form.value.message.trim(),
+                level: form.value.level,
+                property_ids: form.value.allSites ? [] : form.value.targets,
+                expires_in_minutes: form.value.expiresInMinutes ? Number(form.value.expiresInMinutes) : null,
+            }),
+        });
+        announcements.value = await agentFetch(route('agent.announcements.index'));
+        form.value.title = '';
+        form.value.message = '';
+    } catch {
+        announcementError.value = 'Failed to send announcement. Please try again.';
+    } finally {
+        sendingAnnouncement.value = false;
+    }
+}
+
+async function deactivateAnnouncement(announcement: Announcement) {
+    await agentFetch(route('agent.announcements.deactivate', { announcement: announcement.id }), { method: 'POST' });
+    announcements.value = announcements.value.filter((a) => a.id !== announcement.id);
+}
+
+function announcementTargetLabel(announcement: Announcement): string {
+    return announcement.property_ids?.length ? announcement.property_ids.join(', ') : 'All sites';
+}
+
 onBeforeUnmount(() => {
     subscribedChannels.forEach((uuid) => echo.leave('conversation.' + uuid));
     echo.leave('dashboard');
-    endCall(false);
+    endCall(false, true);
     if (peer) {
         peer.destroy();
     }
@@ -554,9 +703,20 @@ onBeforeUnmount(() => {
                 <div class="shrink-0 space-y-3 border-b border-sidebar-border/70 p-3 sm:p-4 dark:border-sidebar-border">
                     <div class="flex items-center justify-between gap-2">
                         <h2 class="text-sm font-semibold tracking-tight">Visitors</h2>
-                        <span class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
-                            {{ openCount }} open
-                        </span>
+                        <div class="flex items-center gap-2">
+                            <span class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                                {{ openCount }} open
+                            </span>
+                            <button
+                                type="button"
+                                class="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                                title="Broadcast a service notice"
+                                aria-label="Broadcast a service notice"
+                                @click="openAnnouncementDialog"
+                            >
+                                <Megaphone class="h-4 w-4" />
+                            </button>
+                        </div>
                     </div>
                     <div class="relative">
                         <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -649,9 +809,10 @@ onBeforeUnmount(() => {
                                 <span class="truncate">{{ isClosed ? 'Chat ended' : selected.property_id || 'unknown site' }}</span>
                             </div>
                         </div>
-                        <Button v-if="!isClosed" size="sm" variant="outline" class="shrink-0" @click="endSession">
-                            <XCircle class="h-4 w-4 sm:mr-1.5" />
-                            <span class="hidden sm:inline">End Chat</span>
+                        <Button v-if="!isClosed" size="sm" variant="outline" class="shrink-0" :disabled="endingSession" @click="endSession">
+                            <Loader2 v-if="endingSession" class="h-4 w-4 animate-spin sm:mr-1.5" />
+                            <XCircle v-else class="h-4 w-4 sm:mr-1.5" />
+                            <span class="hidden sm:inline">{{ endingSession ? 'Ending…' : 'End Chat' }}</span>
                         </Button>
                     </header>
 
@@ -758,12 +919,42 @@ onBeforeUnmount(() => {
                                 class="absolute bottom-3 right-3 h-20 w-28 rounded-xl border border-white/20 object-cover shadow-lg sm:h-24 sm:w-32"
                                 :class="{ hidden: callMode === 'screen' || !localStream }"
                             ></video>
-                            <div
-                                v-if="callStatus"
-                                class="absolute left-1/2 top-3 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 text-xs text-white/90 backdrop-blur"
+                            <Transition
+                                enter-active-class="transition duration-300 ease-out"
+                                enter-from-class="opacity-0"
+                                leave-active-class="transition duration-300 ease-in"
+                                leave-to-class="opacity-0"
                             >
-                                {{ callStatus }}
-                            </div>
+                                <div
+                                    v-if="callOverlayState"
+                                    class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-black/85 backdrop-blur-sm"
+                                >
+                                    <div class="relative flex h-20 w-20 items-center justify-center">
+                                        <span
+                                            class="absolute inline-flex h-full w-full animate-ping rounded-full"
+                                            :class="callOverlayState === 'ending' ? 'bg-red-500/30' : 'bg-emerald-500/30'"
+                                        ></span>
+                                        <span
+                                            class="absolute h-full w-full animate-spin rounded-full border-2 border-white/15"
+                                            :class="callOverlayState === 'ending' ? 'border-t-red-500' : 'border-t-emerald-400'"
+                                        ></span>
+                                        <component
+                                            :is="callOverlayState === 'ending' ? PhoneOff : callMode === 'audio' ? Mic : Video"
+                                            class="relative h-7 w-7 text-white"
+                                        />
+                                    </div>
+                                    <div class="flex items-center gap-1.5">
+                                        <p class="text-sm font-medium text-white">
+                                            {{ callOverlayState === 'ending' ? 'Ending call' : 'Connecting' }}
+                                        </p>
+                                        <span class="flex items-center gap-1">
+                                            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-white/80" style="animation-delay: 0ms"></span>
+                                            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-white/80" style="animation-delay: 150ms"></span>
+                                            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-white/80" style="animation-delay: 300ms"></span>
+                                        </span>
+                                    </div>
+                                </div>
+                            </Transition>
                         </div>
                         <div class="flex shrink-0 justify-center gap-3 bg-gray-900/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
                             <button
@@ -825,5 +1016,144 @@ onBeforeUnmount(() => {
                 <div class="mt-1 line-clamp-2 text-sm text-muted-foreground">{{ toast.body }}</div>
             </div>
         </Transition>
+
+        <!-- Service notice composer -->
+        <Dialog v-model:open="announcementDialogOpen">
+            <DialogContent class="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
+                <DialogHeader>
+                    <DialogTitle>Broadcast a service notice</DialogTitle>
+                    <DialogDescription>
+                        Pushes a popup to every widget on the selected sites, whether or not the visitor has started a chat.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div class="space-y-4">
+                    <div class="space-y-1.5">
+                        <label class="text-xs font-medium text-muted-foreground">Title</label>
+                        <input
+                            v-model="form.title"
+                            type="text"
+                            maxlength="120"
+                            placeholder="Scheduled maintenance"
+                            class="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/30"
+                        />
+                    </div>
+
+                    <div class="space-y-1.5">
+                        <label class="text-xs font-medium text-muted-foreground">Message</label>
+                        <textarea
+                            v-model="form.message"
+                            rows="3"
+                            maxlength="2000"
+                            placeholder="The server restarts at 22:00 WIB. Chat will be unavailable for about 15 minutes."
+                            class="w-full resize-none rounded-lg border border-input bg-background p-3 text-sm outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/30"
+                        ></textarea>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="space-y-1.5">
+                            <label class="text-xs font-medium text-muted-foreground">Level</label>
+                            <select
+                                v-model="form.level"
+                                class="h-9 w-full rounded-lg border border-input bg-background px-2 text-sm outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/30"
+                            >
+                                <option value="info">Info</option>
+                                <option value="warning">Warning</option>
+                                <option value="critical">Critical</option>
+                            </select>
+                        </div>
+                        <div class="space-y-1.5">
+                            <label class="text-xs font-medium text-muted-foreground">Auto-expire</label>
+                            <select
+                                v-model="form.expiresInMinutes"
+                                class="h-9 w-full rounded-lg border border-input bg-background px-2 text-sm outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/30"
+                            >
+                                <option value="">No expiry</option>
+                                <option value="30">30 minutes</option>
+                                <option value="60">1 hour</option>
+                                <option value="120">2 hours</option>
+                                <option value="240">4 hours</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="space-y-2">
+                        <label class="flex items-center gap-2 text-sm">
+                            <input v-model="form.allSites" type="checkbox" class="h-4 w-4 rounded border-input" />
+                            <span class="font-medium">All sites</span>
+                        </label>
+
+                        <div v-if="!form.allSites" class="space-y-2 rounded-lg border border-sidebar-border/70 p-3 dark:border-sidebar-border">
+                            <p v-if="!knownSites.length" class="text-xs text-muted-foreground">
+                                No sites detected yet — they appear here once a page with the widget is opened.
+                            </p>
+                            <label v-for="site in knownSites" :key="site.property_id" class="flex items-start gap-2 text-sm">
+                                <input
+                                    type="checkbox"
+                                    class="mt-0.5 h-4 w-4 shrink-0 rounded border-input"
+                                    :checked="form.targets.includes(site.property_id)"
+                                    @change="toggleTarget(site.property_id)"
+                                />
+                                <span class="min-w-0 flex-1">
+                                    <span class="block truncate">{{ site.property_id }}</span>
+                                    <span v-if="site.origins.length" class="block truncate text-[11px] text-muted-foreground">
+                                        {{ site.origins.join(', ') }}
+                                    </span>
+                                    <span v-else class="block text-[11px] italic text-muted-foreground">domain not detected yet</span>
+                                </span>
+                            </label>
+                            <div class="flex gap-2 pt-1">
+                                <input
+                                    v-model="form.customTarget"
+                                    type="text"
+                                    placeholder="Add another site id"
+                                    class="h-8 min-w-0 flex-1 rounded-lg border border-input bg-background px-2.5 text-sm outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/30"
+                                    @keydown.enter.prevent="addCustomTarget"
+                                />
+                                <Button type="button" size="sm" variant="outline" :disabled="!form.customTarget.trim()" @click="addCustomTarget">
+                                    Add
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <p v-if="announcementError" class="text-sm text-destructive">{{ announcementError }}</p>
+
+                    <Button
+                        class="w-full"
+                        :disabled="!form.message.trim() || sendingAnnouncement || (!form.allSites && !form.targets.length)"
+                        @click="sendAnnouncement"
+                    >
+                        <Loader2 v-if="sendingAnnouncement" class="mr-1.5 h-4 w-4 animate-spin" />
+                        <Megaphone v-else class="mr-1.5 h-4 w-4" />
+                        {{ sendingAnnouncement ? 'Broadcasting…' : 'Broadcast now' }}
+                    </Button>
+
+                    <div v-if="announcements.length" class="space-y-2 border-t border-sidebar-border/70 pt-3 dark:border-sidebar-border">
+                        <p class="text-xs font-medium text-muted-foreground">Currently showing</p>
+                        <div
+                            v-for="announcement in announcements"
+                            :key="announcement.id"
+                            class="flex items-start gap-2 rounded-lg border border-sidebar-border/70 p-2.5 dark:border-sidebar-border"
+                        >
+                            <div class="min-w-0 flex-1">
+                                <p class="truncate text-sm font-medium">{{ announcement.title || 'Service notice' }}</p>
+                                <p class="line-clamp-2 text-xs text-muted-foreground">{{ announcement.message }}</p>
+                                <p class="mt-1 truncate text-[11px] text-muted-foreground">{{ announcementTargetLabel(announcement) }}</p>
+                            </div>
+                            <button
+                                type="button"
+                                class="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+                                title="Stop showing this notice"
+                                aria-label="Stop showing this notice"
+                                @click="deactivateAnnouncement(announcement)"
+                            >
+                                <Trash2 class="h-4 w-4" />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </DialogContent>
+        </Dialog>
     </AppLayout>
 </template>

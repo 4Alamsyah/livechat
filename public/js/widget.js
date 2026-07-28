@@ -31,6 +31,8 @@
     var STORAGE_VISITOR_KEY = 'lc_visitor_id_' + PROPERTY_ID;
     var STORAGE_CONVERSATION_KEY = 'lc_conversation_' + PROPERTY_ID;
     var STORAGE_NAME_KEY = 'lc_visitor_name_' + PROPERTY_ID;
+    var STORAGE_DISMISSED_ANNOUNCEMENT_KEY = 'lc_dismissed_announcement_' + PROPERTY_ID;
+    var STORAGE_HEARTBEAT_KEY = 'lc_site_reported_' + PROPERTY_ID;
 
     // ---------------------------------------------------------------------
     // Small helpers
@@ -216,6 +218,24 @@
         .lc-toast-title{font-size:12px;font-weight:700;color:#2563eb;margin-bottom:3px;}\
         .lc-toast-body{font-size:13px;color:#111827;overflow:hidden;text-overflow:ellipsis;\
             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}\
+        .lc-announce{position:fixed;bottom:92px;right:20px;width:320px;max-width:calc(100vw - 24px);\
+            background:#fff;border-radius:12px;border-left:4px solid #d97706;\
+            box-shadow:0 12px 34px rgba(0,0,0,.28);padding:13px 15px;z-index:2147483001;display:none;\
+            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;\
+            animation:lc-announce-in .28s ease-out;}\
+        .lc-announce.lc-show{display:block;}\
+        .lc-announce.lc-level-info{border-left-color:#2563eb;}\
+        .lc-announce.lc-level-critical{border-left-color:#dc2626;}\
+        .lc-announce-head{display:flex;align-items:center;gap:7px;margin-bottom:5px;}\
+        .lc-announce-ico{font-size:15px;line-height:1;}\
+        .lc-announce-title{font-size:13px;font-weight:700;color:#92400e;}\
+        .lc-announce.lc-level-info .lc-announce-title{color:#1d4ed8;}\
+        .lc-announce.lc-level-critical .lc-announce-title{color:#b91c1c;}\
+        .lc-announce-body{font-size:13px;line-height:1.45;color:#374151;white-space:pre-wrap;word-break:break-word;}\
+        .lc-announce-dismiss{margin-top:10px;width:100%;padding:7px;border:none;border-radius:7px;\
+            background:#f3f4f6;color:#374151;font-size:12px;font-weight:600;cursor:pointer;}\
+        .lc-announce-dismiss:hover{background:#e5e7eb;}\
+        @keyframes lc-announce-in{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}\
     ';
 
     function injectStyles() {
@@ -244,6 +264,8 @@
         this.localStream = null;
         this.callMode = null; // 'video' | 'audio' | 'screen'
         this.unreadCount = 0;
+        this.pusherReady = null;
+        this.currentAnnouncementId = null;
 
         this.buildDom();
         this.bindEvents();
@@ -251,6 +273,10 @@
         if (this.conversationUuid) {
             this.enterChatView();
         }
+
+        this.reportSite();
+        this.checkAnnouncement();
+        this.connectAnnouncements();
     }
 
     Widget.prototype.buildDom = function () {
@@ -271,6 +297,22 @@
         this.toastEl = toast;
         this.toastBodyEl = toast.querySelector('.lc-toast-body');
         this.toastTimer = null;
+
+        var announce = document.createElement('div');
+        announce.className = 'lc-announce';
+        announce.innerHTML =
+            '<div class="lc-announce-head">' +
+                '<span class="lc-announce-ico">⚠️</span>' +
+                '<span class="lc-announce-title"></span>' +
+            '</div>' +
+            '<div class="lc-announce-body"></div>' +
+            '<button class="lc-announce-dismiss" type="button">Got it</button>';
+        document.body.appendChild(announce);
+        this.announceEl = announce;
+        this.announceIcoEl = announce.querySelector('.lc-announce-ico');
+        this.announceTitleEl = announce.querySelector('.lc-announce-title');
+        this.announceBodyEl = announce.querySelector('.lc-announce-body');
+        this.announceDismissEl = announce.querySelector('.lc-announce-dismiss');
 
         var panel = document.createElement('div');
         panel.className = 'lc-panel';
@@ -364,6 +406,10 @@
         this.toastEl.addEventListener('click', function () {
             self.hideToast();
             self.setPanelOpen(true);
+        });
+
+        this.announceDismissEl.addEventListener('click', function () {
+            self.dismissAnnouncement();
         });
 
         this.launcherEl.addEventListener('click', function () {
@@ -541,9 +587,16 @@
             .catch(function () {});
     };
 
-    Widget.prototype.connectRealtime = function () {
+    /**
+     * One shared Pusher client for both the announcement channel (opened on
+     * page load) and the conversation channel (opened once a chat starts).
+     */
+    Widget.prototype.ensurePusher = function () {
         var self = this;
-        api('/api/widget/config')
+        if (this.pusherReady) {
+            return this.pusherReady;
+        }
+        this.pusherReady = api('/api/widget/config')
             .then(function (config) {
                 self.config = config;
                 return loadScript(CDN.pusher);
@@ -558,7 +611,16 @@
                     enabledTransports: ['ws', 'wss'],
                     disableStats: true,
                 });
-                self.channel = self.pusher.subscribe('conversation.' + self.conversationUuid);
+                return self.pusher;
+            });
+        return this.pusherReady;
+    };
+
+    Widget.prototype.connectRealtime = function () {
+        var self = this;
+        this.ensurePusher()
+            .then(function (pusher) {
+                self.channel = pusher.subscribe('conversation.' + self.conversationUuid);
                 self.channel.bind('message.sent', function (payload) {
                     if (payload.sender_type !== 'visitor') {
                         self.renderMessage(payload);
@@ -582,6 +644,92 @@
             .catch(function (err) {
                 console.error('[live-support] realtime connection failed', err);
             });
+    };
+
+    // -- Announcements ------------------------------------------------------
+
+    /**
+     * Tells the backend this site has the widget installed, so agents can pick
+     * it as an announcement target before anyone here has ever chatted. Once
+     * per browser session is plenty — this is a roster, not analytics.
+     */
+    Widget.prototype.reportSite = function () {
+        if (sessionStorage.getItem(STORAGE_HEARTBEAT_KEY)) {
+            return;
+        }
+        api('/api/widget/sites/heartbeat', {
+            method: 'POST',
+            body: { property_id: PROPERTY_ID },
+        })
+            .then(function () {
+                sessionStorage.setItem(STORAGE_HEARTBEAT_KEY, '1');
+            })
+            .catch(function () {});
+    };
+
+    /** Catches an announcement broadcast before this page was opened. */
+    Widget.prototype.checkAnnouncement = function () {
+        var self = this;
+        api('/api/widget/announcements?property_id=' + encodeURIComponent(PROPERTY_ID))
+            .then(function (announcement) {
+                if (announcement) {
+                    self.showAnnouncement(announcement);
+                }
+            })
+            .catch(function () {});
+    };
+
+    Widget.prototype.connectAnnouncements = function () {
+        var self = this;
+        this.ensurePusher()
+            .then(function (pusher) {
+                var channel = pusher.subscribe('announcements');
+                channel.bind('announcement.created', function (announcement) {
+                    if (self.announcementTargetsThisWidget(announcement)) {
+                        self.showAnnouncement(announcement);
+                    }
+                });
+                channel.bind('announcement.cleared', function (payload) {
+                    if (self.currentAnnouncementId === payload.id) {
+                        self.hideAnnouncement();
+                    }
+                });
+            })
+            .catch(function (err) {
+                console.error('[live-support] announcement channel failed', err);
+            });
+    };
+
+    Widget.prototype.announcementTargetsThisWidget = function (announcement) {
+        var targets = announcement.property_ids;
+        if (!targets || !targets.length) {
+            return true;
+        }
+        return targets.indexOf(PROPERTY_ID) !== -1;
+    };
+
+    Widget.prototype.showAnnouncement = function (announcement) {
+        if (String(localStorage.getItem(STORAGE_DISMISSED_ANNOUNCEMENT_KEY)) === String(announcement.id)) {
+            return;
+        }
+        var level = announcement.level || 'warning';
+        this.currentAnnouncementId = announcement.id;
+        this.announceEl.className = 'lc-announce lc-show lc-level-' + level;
+        this.announceIcoEl.textContent = level === 'critical' ? '🚨' : level === 'info' ? 'ℹ️' : '⚠️';
+        this.announceTitleEl.textContent = announcement.title || 'Service notice';
+        this.announceBodyEl.textContent = announcement.message;
+    };
+
+    Widget.prototype.hideAnnouncement = function () {
+        this.announceEl.classList.remove('lc-show');
+        this.currentAnnouncementId = null;
+    };
+
+    Widget.prototype.dismissAnnouncement = function () {
+        if (this.currentAnnouncementId !== null) {
+            localStorage.setItem(STORAGE_DISMISSED_ANNOUNCEMENT_KEY, String(this.currentAnnouncementId));
+        }
+        this.hideAnnouncement();
     };
 
     Widget.prototype.renderMessage = function (m) {
@@ -690,9 +838,8 @@
     };
 
     Widget.prototype.startNewSession = function () {
-        if (this.pusher) {
-            this.pusher.disconnect();
-            this.pusher = null;
+        if (this.pusher && this.conversationUuid) {
+            this.pusher.unsubscribe('conversation.' + this.conversationUuid);
         }
         this.channel = null;
         sessionStorage.removeItem(STORAGE_CONVERSATION_KEY);
