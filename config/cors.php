@@ -13,7 +13,7 @@ return [
     |
     */
 
-    'paths' => ['api/*'],
+    'paths' => ['api/*', 'storage/*'],
 
     'allowed_methods' => ['*'],
 

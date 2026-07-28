@@ -433,7 +433,7 @@ function toggleCamera() {
 
 function endCall(notifyRemote: boolean) {
     if (notifyRemote && selected.value) {
-        agentFetch(route('agent.conversations.call', selected.value.uuid), {
+        agentFetch(route('agent.conversations.call', { uuid: selected.value.uuid }), {
             method: 'POST',
             body: JSON.stringify({ type: 'end' }),
         }).catch(() => {});
