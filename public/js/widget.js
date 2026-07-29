@@ -362,6 +362,10 @@
         var topicHtml = settings.collect_topic
             ? '<input type="text" class="lc-topic-input" placeholder="What can we help with? (optional)" />'
             : '';
+        var screenShareSupported = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+        var screenBtnHtml = screenShareSupported
+            ? '<button class="lc-call-btn" data-mode="screen"><span class="lc-ico">🖥️</span>Share Screen</button>'
+            : '';
 
         var panel = document.createElement('div');
         panel.className = 'lc-panel';
@@ -388,7 +392,7 @@
                     '<div class="lc-callbar">' +
                         '<button class="lc-call-btn" data-mode="video"><span class="lc-ico">📹</span>Video</button>' +
                         '<button class="lc-call-btn" data-mode="audio"><span class="lc-ico">📞</span>Audio</button>' +
-                        '<button class="lc-call-btn" data-mode="screen"><span class="lc-ico">🖥️</span>Share Screen</button>' +
+                        screenBtnHtml +
                     '</div>' +
                     '<div class="lc-inputbar">' +
                         '<button class="lc-attach-btn" type="button" title="Send image">📎</button>' +
